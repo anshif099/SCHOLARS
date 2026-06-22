@@ -1,7 +1,9 @@
+import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 class PermissionService {
   static Future<bool> requestCameraAndMic() async {
+    if (kIsWeb) return true;
     Map<Permission, PermissionStatus> statuses = await [
       Permission.camera,
       Permission.microphone,
@@ -12,6 +14,7 @@ class PermissionService {
   }
 
   static Future<void> requestAllPermissions() async {
+    if (kIsWeb) return;
     await [
       Permission.camera,
       Permission.microphone,
@@ -19,3 +22,4 @@ class PermissionService {
     ].request();
   }
 }
+

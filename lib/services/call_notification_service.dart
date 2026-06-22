@@ -34,6 +34,7 @@ class CallNotificationService {
 
   /// Called once from [main.dart] at startup.
   static Future<void> init() async {
+    if (kIsWeb) return;
     try {
       await _ensureInitialized();
     } catch (e) {
@@ -59,6 +60,7 @@ class CallNotificationService {
   /// Returns true when Android/iOS notification permission is usable and the
   /// student's current FCM token was saved to the database.
   static Future<bool> activateForStudent(String studentKey) async {
+    if (kIsWeb) return false;
     try {
       await _ensureInitialized();
     } catch (e) {
@@ -113,6 +115,7 @@ class CallNotificationService {
   }
 
   static Future<bool> hasSavedToken(String studentKey) async {
+    if (kIsWeb) return false;
     try {
       final tokenSnapshot = await FirebaseDatabase.instance
           .ref()
@@ -131,6 +134,7 @@ class CallNotificationService {
 
   /// Stop all listeners and clean up tokens.
   static Future<void> deactivateStudentSession() async {
+    if (kIsWeb) return;
     final studentKey = _activeStudentKey;
     _activeStudentKey = null;
 
@@ -161,6 +165,7 @@ class CallNotificationService {
   static Future<void> showIncomingCallFromRemoteMessage(
     RemoteMessage message,
   ) async {
+    if (kIsWeb) return;
     try {
       final callData = _extractCallData(message);
       if (callData == null) {

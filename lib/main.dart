@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -30,17 +31,27 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
-  FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+  try {
+    if (kIsWeb) {
+      await Firebase.initializeApp();
+    } else {
+      await Firebase.initializeApp();
+      FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+    }
+  } catch (e) {
+    debugPrint("Firebase initialization failed: $e");
+  }
 
   // Set status bar style for a clean look
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.dark,
-      statusBarBrightness: Brightness.light,
-    ),
-  );
+  if (!kIsWeb) {
+    SystemChrome.setSystemUIOverlayStyle(
+      const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.dark,
+        statusBarBrightness: Brightness.light,
+      ),
+    );
+  }
 
   runApp(const ScholarsApp());
 }
@@ -82,17 +93,22 @@ class _AuthGateState extends State<_AuthGate> {
   void initState() {
     super.initState();
     _checkLoginState();
-    CallNotificationService.init();
+    
+    if (!kIsWeb) {
+      CallNotificationService.init();
 
-    CallManager.listenToCallEvents((extra) {
-      unawaited(_openIncomingClass(extra));
-    });
+      CallManager.listenToCallEvents((extra) {
+        unawaited(_openIncomingClass(extra));
+      });
 
-    FirebaseMessaging.onMessageOpenedApp.listen(_openIncomingClassFromMessage);
+      FirebaseMessaging.onMessageOpenedApp.listen(_openIncomingClassFromMessage);
+    }
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _recoverAcceptedCall();
-      _recoverNotificationTap();
+      if (!kIsWeb) {
+        _recoverAcceptedCall();
+        _recoverNotificationTap();
+      }
     });
   }
 
@@ -152,7 +168,9 @@ class _AuthGateState extends State<_AuthGate> {
           if (snapshot.value != null) {
             final st = Map<dynamic, dynamic>.from(snapshot.value as Map);
             st['key'] = key;
-            await CallNotificationService.activateForStudent(key);
+            if (!kIsWeb) {
+              await CallNotificationService.activateForStudent(key);
+            }
             if (mounted) {
               setState(() {
                 _homePage = StudentDashboardPage(studentData: st);
@@ -166,7 +184,9 @@ class _AuthGateState extends State<_AuthGate> {
       }
       // Cleanup if failed
       await prefs.remove('is_student_logged_in');
-      await CallNotificationService.deactivateStudentSession();
+      if (!kIsWeb) {
+        await CallNotificationService.deactivateStudentSession();
+      }
     }
 
     if (mounted) {
