@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:firebase_database/firebase_database.dart';
@@ -11,6 +12,8 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+
+import '../services/web_recording_helper.dart';
 
 import '../services/firebase_upload_auth_service.dart';
 import '../services/permission_service.dart';
@@ -98,6 +101,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   Timer? _recordingTimer;
   RTCPeerConnection? _loopbackConnectionA;
   RTCPeerConnection? _loopbackConnectionB;
+  Uint8List? _webRecordedBytes;
+  final _webRecordingHelper = WebRecordingHelper();
 
   String _statusMessage = '';
   String? _errorMessage;
@@ -1132,13 +1137,17 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     }
 
     try {
-      final storageDir = await getApplicationDocumentsDirectory();
-      final recDir = Directory('${storageDir.path}/recordings');
-      if (!await recDir.exists()) {
-        await recDir.create(recursive: true);
+      if (kIsWeb) {
+        _localVideoPath = 'web_recording_${DateTime.now().millisecondsSinceEpoch}';
+      } else {
+        final storageDir = await getApplicationDocumentsDirectory();
+        final recDir = Directory('${storageDir.path}/recordings');
+        if (!await recDir.exists()) {
+          await recDir.create(recursive: true);
+        }
+        _localVideoPath =
+            '${recDir.path}/rec_${DateTime.now().millisecondsSinceEpoch}.mp4';
       }
-      _localVideoPath =
-          '${recDir.path}/rec_${DateTime.now().millisecondsSinceEpoch}.mp4';
 
       _mediaRecorder = MediaRecorder(albumName: '');
 
@@ -1146,7 +1155,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
           ? _localStream!.getVideoTracks().first
           : null;
 
-      if (WebRTC.platformIsAndroid) {
+      if (kIsWeb) {
+        _webRecordingHelper.start(_mediaRecorder!, _localStream!);
+      } else if (WebRTC.platformIsAndroid) {
         await _mediaRecorder!.startWithMixedAudio(
           _localVideoPath!,
           videoTrack: videoTrack,
@@ -1438,10 +1449,15 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
 
     bool success = false;
     try {
-      await recorder.stop().timeout(_recorderStopTimeout);
-      debugPrint('MediaRecorder stopped successfully');
-      await Future<void>.delayed(const Duration(milliseconds: 300));
-      success = true;
+      if (kIsWeb) {
+        _webRecordedBytes = await _webRecordingHelper.stop();
+        success = _webRecordedBytes != null && _webRecordedBytes!.isNotEmpty;
+      } else {
+        await recorder.stop().timeout(_recorderStopTimeout);
+        debugPrint('MediaRecorder stopped successfully');
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        success = true;
+      }
     } on TimeoutException {
       debugPrint('MediaRecorder stop timed out after $_recorderStopTimeout');
       success = false;
@@ -1587,6 +1603,81 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         'Recording could not be finalized safely.',
       );
       return false;
+    } else if (kIsWeb) {
+      if (_webRecordedBytes == null || _webRecordedBytes!.isEmpty) {
+        debugPrint('Recording upload skipped: no bytes recorded.');
+        await markRecordingFailed('empty_file', 'No bytes were recorded.');
+        return false;
+      }
+
+      final authUid = await FirebaseUploadAuthService.ensureSignedIn();
+      if (authUid == null) {
+        await markRecordingFailed(
+          'auth_failed',
+          'Firebase Anonymous Authentication is not enabled or sign-in failed. Enable Authentication > Sign-in method > Anonymous in Firebase Console.',
+        );
+        return false;
+      }
+
+      if (mounted) {
+        setState(() => _statusMessage = 'Uploading video...');
+      }
+
+      fileSizeBytes = _webRecordedBytes!.length;
+      storagePath =
+          'recorded_classes/${widget.classId}/${recordedAt}_360p_1mbpm.webm';
+      final storageRef = FirebaseStorage.instance.ref().child(storagePath!);
+      final customMetadata = <String, String>{
+        'class_id': widget.classId,
+        'topic': widget.topic,
+        'quality': _recordingQuality,
+        'width': '$_recordingWidth',
+        'height': '$_recordingHeight',
+        'max_frame_rate': '$_recordingMaxFrameRate',
+        'live_bandwidth_kbps': '${_callVideoMaxBitrate ~/ 1000}',
+        'target_kb_per_minute': '$_recordingTargetKbPerMinute',
+      };
+      customMetadata['uploaded_by_uid'] = authUid;
+
+      await updateRecordedClass(<String, dynamic>{
+        'upload_status': 'uploading',
+        'storage_path': storagePath,
+        'file_size_bytes': fileSizeBytes,
+      });
+
+      final metadata = SettableMetadata(
+        contentType: 'video/webm',
+        customMetadata: customMetadata,
+      );
+
+      try {
+        final snapshot = await storageRef
+            .putData(_webRecordedBytes!, metadata)
+            .timeout(_uploadTimeout);
+        if (snapshot.state == TaskState.success) {
+          videoUrl = await storageRef.getDownloadURL().timeout(
+            const Duration(seconds: 30),
+          );
+          uploadStatus = 'ready';
+          debugPrint('Video uploaded to Storage: $videoUrl');
+          _webRecordedBytes = null;
+          await updateRecordedClass(<String, dynamic>{
+            'video_url': videoUrl,
+            'upload_status': uploadStatus,
+            'storage_path': storagePath,
+          });
+          return true;
+        } else {
+          await markRecordingFailed(
+            'upload_failed',
+            'Storage upload task failed.',
+          );
+          return false;
+        }
+      } catch (e) {
+        await markRecordingFailed('upload_failed', e.toString());
+        return false;
+      }
     } else if (videoPath != null) {
       final file = File(videoPath);
       if (await file.exists()) {

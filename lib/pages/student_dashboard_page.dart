@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:ui';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -1567,14 +1568,19 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
       if (authUid == null) {
         throw Exception('Firebase authentication failed. Ensure anonymous sign-in is enabled in Firebase Console.');
       }
-      final file = File(pickedFile.path);
       final ref = FirebaseStorage.instance
           .ref()
           .child('thumbnails')
           .child(widget.classId)
           .child('$recordingKey.jpg');
 
-      await ref.putFile(file);
+      if (kIsWeb) {
+        final bytes = await pickedFile.readAsBytes();
+        await ref.putData(bytes);
+      } else {
+        final file = File(pickedFile.path);
+        await ref.putFile(file);
+      }
       final downloadUrl = await ref.getDownloadURL();
 
       await FirebaseDatabase.instance
@@ -1761,7 +1767,6 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                 }
 
                 final noteKey = FirebaseDatabase.instance.ref().push().key ?? DateTime.now().millisecondsSinceEpoch.toString();
-                final file = File(selectedFile!.path!);
                 final fileExtension = selectedFile!.extension ?? (noteType == 'pdf' ? 'pdf' : 'jpg');
                 final ref = FirebaseStorage.instance
                     .ref()
@@ -1770,7 +1775,16 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                     .child(widget.subjectKey)
                     .child('$noteKey.$fileExtension');
 
-                await ref.putFile(file);
+                if (kIsWeb) {
+                  final bytes = selectedFile!.bytes;
+                  if (bytes == null) {
+                    throw Exception('Could not read file bytes.');
+                  }
+                  await ref.putData(bytes);
+                } else {
+                  final file = File(selectedFile!.path!);
+                  await ref.putFile(file);
+                }
                 final downloadUrl = await ref.getDownloadURL();
 
                 await FirebaseDatabase.instance
