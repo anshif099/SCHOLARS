@@ -5,6 +5,7 @@ import 'dart:ui';
 
 import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -350,21 +351,43 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   }
 
   Future<void> _setupLocalMedia() async {
-    final mediaConstraints = <String, dynamic>{
-      'audio': true,
-      'video': <String, dynamic>{
-        'mandatory': <String, dynamic>{
-          'minWidth': '$_callVideoWidth',
-          'minHeight': '$_callVideoHeight',
-          'maxWidth': '$_callVideoWidth',
-          'maxHeight': '$_callVideoHeight',
-          'minFrameRate': '$_callVideoMinFrameRate',
-          'maxFrameRate': '$_callVideoMaxFrameRate',
-        },
-        'facingMode': 'user',
-        'optional': <dynamic>[],
-      },
-    };
+    final mediaConstraints = kIsWeb
+        ? <String, dynamic>{
+            'audio': true,
+            'video': <String, dynamic>{
+              'width': {
+                'min': _callVideoWidth,
+                'ideal': _callVideoWidth,
+                'max': _callVideoWidth
+              },
+              'height': {
+                'min': _callVideoHeight,
+                'ideal': _callVideoHeight,
+                'max': _callVideoHeight
+              },
+              'frameRate': {
+                'min': _callVideoMinFrameRate,
+                'ideal': _callVideoMaxFrameRate,
+                'max': _callVideoMaxFrameRate
+              },
+              'facingMode': 'user',
+            },
+          }
+        : <String, dynamic>{
+            'audio': true,
+            'video': <String, dynamic>{
+              'mandatory': <String, dynamic>{
+                'minWidth': '$_callVideoWidth',
+                'minHeight': '$_callVideoHeight',
+                'maxWidth': '$_callVideoWidth',
+                'maxHeight': '$_callVideoHeight',
+                'minFrameRate': '$_callVideoMinFrameRate',
+                'maxFrameRate': '$_callVideoMaxFrameRate',
+              },
+              'facingMode': 'user',
+              'optional': <dynamic>[],
+            },
+          };
 
     _localStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
     _localAudioTrack = _localStream!.getAudioTracks().isNotEmpty
