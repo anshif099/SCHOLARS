@@ -1817,10 +1817,23 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
 
     // Show loader
     if (!context.mounted) return;
+    BuildContext? dialogContext;
+    bool dialogClosed = false;
+
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => const Center(child: CircularProgressIndicator()),
+      builder: (ctx) {
+        dialogContext = ctx;
+        if (dialogClosed) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (ctx.mounted) {
+              Navigator.of(ctx).pop();
+            }
+          });
+        }
+        return const Center(child: CircularProgressIndicator());
+      },
     );
 
     try {
@@ -1851,17 +1864,20 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
           .update({'thumbnail_url': downloadUrl});
 
       if (context.mounted) {
-        Navigator.of(context).pop(); // Dismiss loader
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Thumbnail updated successfully!')),
         );
       }
     } catch (e) {
       if (context.mounted) {
-        Navigator.of(context).pop(); // Dismiss loader
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Failed to upload thumbnail: $e')),
         );
+      }
+    } finally {
+      dialogClosed = true;
+      if (dialogContext != null && dialogContext!.mounted) {
+        Navigator.of(dialogContext!).pop();
       }
     }
   }
@@ -1926,10 +1942,24 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
 
     if (confirmed == true) {
       if (!context.mounted) return;
+
+      BuildContext? dialogContext;
+      bool dialogClosed = false;
+
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (ctx) => const Center(child: CircularProgressIndicator()),
+        builder: (ctx) {
+          dialogContext = ctx;
+          if (dialogClosed) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (ctx.mounted) {
+                Navigator.of(ctx).pop();
+              }
+            });
+          }
+          return const Center(child: CircularProgressIndicator());
+        },
       );
 
       try {
@@ -1950,7 +1980,6 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
             .remove();
 
         if (context.mounted) {
-          Navigator.of(context).pop(); // Dismiss spinner
           setState(() => _notesStreamKey++); // Force notes list refresh
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Note deleted successfully.')),
@@ -1958,10 +1987,14 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
         }
       } catch (e) {
         if (context.mounted) {
-          Navigator.of(context).pop(); // Dismiss spinner
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Failed to delete note: $e')),
           );
+        }
+      } finally {
+        dialogClosed = true;
+        if (dialogContext != null && dialogContext!.mounted) {
+          Navigator.of(dialogContext!).pop();
         }
       }
     }
