@@ -5,7 +5,16 @@ WebRecordingHelper getHelper() => StubWebRecordingHelper();
 
 class StubWebRecordingHelper implements WebRecordingHelper {
   @override
-  void start(dynamic mediaRecorder, dynamic stream) {
+  void start(
+    dynamic mediaRecorder,
+    dynamic stream, {
+    List<dynamic>? remoteStreams,
+  }) {
+    // No-op on native platforms
+  }
+
+  @override
+  void addRemoteStream(dynamic stream) {
     // No-op on native platforms
   }
 

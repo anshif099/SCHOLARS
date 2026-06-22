@@ -1,6 +1,10 @@
 import 'dart:async';
 import 'dart:html' as html;
 import 'dart:typed_data';
+import 'dart:js_interop';
+import 'package:web/web.dart' as web;
+import 'package:dart_webrtc/dart_webrtc.dart';
+import 'package:dart_webrtc/src/media_stream_impl.dart';
 import 'web_recording_helper.dart';
 
 WebRecordingHelper getHelper() => WebRecordingHelperImpl();
@@ -9,25 +13,129 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
   final List<dynamic> _chunks = [];
   dynamic _mediaRecorder;
 
+  web.AudioContext? _audioContext;
+  web.MediaStreamAudioDestinationNode? _destination;
+  final List<web.MediaStreamAudioSourceNode> _sources = [];
+
   @override
-  void start(dynamic mediaRecorder, dynamic stream) {
+  void start(
+    dynamic mediaRecorder,
+    dynamic stream, {
+    List<dynamic>? remoteStreams,
+  }) {
     _chunks.clear();
     _mediaRecorder = mediaRecorder;
+    _sources.clear();
 
     try {
-      mediaRecorder.startWeb(
-        stream,
-        onDataChunk: (dynamic blob, bool isLastOne) {
-          if (blob != null) {
-            _chunks.add(blob);
+      if (stream is MediaStreamWeb) {
+        final localJsStream = stream.jsStream;
+
+        // 1. Initialize AudioContext and Destination Node
+        final audioContext = web.AudioContext();
+        _audioContext = audioContext;
+
+        final destination = audioContext.createMediaStreamDestination();
+        _destination = destination;
+
+        // 2. Add local microphone to mixer
+        if (localJsStream.getAudioTracks().toDart.isNotEmpty) {
+          final localSource = audioContext.createMediaStreamSource(localJsStream);
+          localSource.connect(destination);
+          _sources.add(localSource);
+        }
+
+        // 3. Add initial remote streams (students) to mixer
+        if (remoteStreams != null) {
+          for (final rs in remoteStreams) {
+            if (rs is MediaStreamWeb) {
+              final remoteJsStream = rs.jsStream;
+              if (remoteJsStream.getAudioTracks().toDart.isNotEmpty) {
+                try {
+                  final remoteSource = audioContext.createMediaStreamSource(remoteJsStream);
+                  remoteSource.connect(destination);
+                  _sources.add(remoteSource);
+                } catch (e) {
+                  // ignore: avoid_print
+                  print('Error mixing initial remote audio stream: $e');
+                }
+              }
+            }
           }
-        },
-        mimeType: 'video/webm',
-        timeSlice: 1000,
-      );
+        }
+
+        // 4. Create combined MediaStream containing local video and mixed audio
+        final mixedJsStream = web.MediaStream();
+
+        // Add local video tracks
+        for (final track in localJsStream.getVideoTracks().toDart) {
+          mixedJsStream.addTrack(track);
+        }
+
+        // Add mixed audio tracks from destination node
+        for (final track in destination.stream.getAudioTracks().toDart) {
+          mixedJsStream.addTrack(track);
+        }
+
+        // Wrap the native mixed jsStream back to MediaStreamWeb
+        final mixedStreamWeb = MediaStreamWeb(mixedJsStream, 'local');
+
+        mediaRecorder.startWeb(
+          mixedStreamWeb,
+          onDataChunk: (dynamic blob, bool isLastOne) {
+            if (blob != null) {
+              _chunks.add(blob);
+            }
+          },
+          mimeType: 'video/webm',
+          timeSlice: 1000,
+        );
+      } else {
+        // Fallback to recording local stream only if stream is not MediaStreamWeb
+        mediaRecorder.startWeb(
+          stream,
+          onDataChunk: (dynamic blob, bool isLastOne) {
+            if (blob != null) {
+              _chunks.add(blob);
+            }
+          },
+          mimeType: 'video/webm',
+          timeSlice: 1000,
+        );
+      }
     } catch (e) {
       // ignore: avoid_print
-      print('Error starting web recording: $e');
+      print('Error starting web recording with audio mixing: $e');
+      // Fallback
+      try {
+        mediaRecorder.startWeb(
+          stream,
+          onDataChunk: (dynamic blob, bool isLastOne) {
+            if (blob != null) {
+              _chunks.add(blob);
+            }
+          },
+          mimeType: 'video/webm',
+          timeSlice: 1000,
+        );
+      } catch (_) {}
+    }
+  }
+
+  @override
+  void addRemoteStream(dynamic stream) {
+    if (_audioContext != null && _destination != null && stream is MediaStreamWeb) {
+      final remoteJsStream = stream.jsStream;
+      if (remoteJsStream.getAudioTracks().toDart.isNotEmpty) {
+        try {
+          final source = _audioContext!.createMediaStreamSource(remoteJsStream);
+          source.connect(_destination!);
+          _sources.add(source);
+        } catch (e) {
+          // ignore: avoid_print
+          print('Error adding remote stream dynamically to audio mixer: $e');
+        }
+      }
     }
   }
 
@@ -41,6 +149,22 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
       // ignore: avoid_print
       print('Error stopping web media recorder: $e');
     }
+
+    // Clean up Web Audio API nodes to release resources and stop listeners
+    for (final src in _sources) {
+      try {
+        src.disconnect();
+      } catch (_) {}
+    }
+    _sources.clear();
+
+    if (_audioContext != null) {
+      try {
+        _audioContext!.close();
+      } catch (_) {}
+      _audioContext = null;
+    }
+    _destination = null;
 
     if (_chunks.isEmpty) return null;
 

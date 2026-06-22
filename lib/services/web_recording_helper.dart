@@ -6,6 +6,13 @@ import 'web_recording_helper_stub.dart'
 abstract class WebRecordingHelper {
   factory WebRecordingHelper() => getHelper();
 
-  void start(dynamic mediaRecorder, dynamic stream);
+  void start(
+    dynamic mediaRecorder,
+    dynamic stream, {
+    List<dynamic>? remoteStreams,
+  });
+
+  void addRemoteStream(dynamic stream);
+
   Future<Uint8List?> stop();
 }

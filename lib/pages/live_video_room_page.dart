@@ -969,6 +969,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
 
     renderer.srcObject = stream;
 
+    if (kIsWeb && _mediaRecorder != null) {
+      _webRecordingHelper.addRemoteStream(stream);
+    }
+
     if (!mounted || _isCleaningUp || _hasEndedCall) {
       return;
     }
@@ -1156,7 +1160,15 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
           : null;
 
       if (kIsWeb) {
-        _webRecordingHelper.start(_mediaRecorder!, _localStream!);
+        final remoteStreams = _remoteRenderers.values
+            .map((r) => r.srcObject)
+            .whereType<MediaStream>()
+            .toList();
+        _webRecordingHelper.start(
+          _mediaRecorder!,
+          _localStream!,
+          remoteStreams: remoteStreams,
+        );
       } else if (WebRTC.platformIsAndroid) {
         await _mediaRecorder!.startWithMixedAudio(
           _localVideoPath!,
