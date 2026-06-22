@@ -1,0 +1,17 @@
+{
+  "rules": {
+    ".read": true,
+    ".write": true,
+    "students": {
+      ".indexOn": ["login_id", "teacher_id", "class_id"]
+    },
+    "teachers": {
+      ".indexOn": ["class_id"]
+    },
+    "recorded_classes": {
+      "$classId": {
+        ".indexOn": ["date"]
+      }
+    }
+  }
+}

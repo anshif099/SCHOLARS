@@ -1,0 +1,35 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /recorded_classes/{classId}/{fileName} {
+      allow read: if true;
+      allow create, update: if request.auth != null
+        && fileName.matches('.*\\.mp4')
+        && request.resource.contentType == 'video/mp4'
+        && request.resource.size < 2 * 1024 * 1024 * 1024;
+      allow delete: if request.auth != null;
+    }
+
+    match /notes/{classId}/{subjectKey}/{fileName} {
+      allow read: if true;
+      allow create, update: if request.auth != null
+        && request.resource.size < 100 * 1024 * 1024;
+      allow delete: if request.auth != null;
+    }
+
+    match /thumbnails/{classId}/{fileName} {
+      allow read: if true;
+      allow create, update: if request.auth != null
+        && request.resource.size < 10 * 1024 * 1024;
+      allow delete: if request.auth != null;
+    }
+
+    match /notices/{fileName} {
+      allow read: if true;
+      allow create, update: if request.auth != null
+        && request.resource.size < 10 * 1024 * 1024;
+      allow delete: if request.auth != null;
+    }
+  }
+}
