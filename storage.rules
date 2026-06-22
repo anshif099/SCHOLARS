@@ -5,8 +5,8 @@ service firebase.storage {
     match /recorded_classes/{classId}/{fileName} {
       allow read: if true;
       allow create, update: if request.auth != null
-        && fileName.matches('.*\\.mp4')
-        && request.resource.contentType == 'video/mp4'
+        && (fileName.matches('.*\\.mp4') || fileName.matches('.*\\.webm'))
+        && (request.resource.contentType == 'video/mp4' || request.resource.contentType == 'video/webm')
         && request.resource.size < 2 * 1024 * 1024 * 1024;
       allow delete: if request.auth != null;
     }

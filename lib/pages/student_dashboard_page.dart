@@ -1576,7 +1576,10 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
 
       if (kIsWeb) {
         final bytes = await pickedFile.readAsBytes();
-        await ref.putData(bytes);
+        await ref.putData(
+          bytes,
+          SettableMetadata(contentType: 'image/jpeg'),
+        );
       } else {
         final file = File(pickedFile.path);
         await ref.putFile(file);
@@ -1780,7 +1783,13 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                   if (bytes == null) {
                     throw Exception('Could not read file bytes.');
                   }
-                  await ref.putData(bytes);
+                  final mimeType = noteType == 'pdf'
+                      ? 'application/pdf'
+                      : (fileExtension == 'png' ? 'image/png' : 'image/jpeg');
+                  await ref.putData(
+                    bytes,
+                    SettableMetadata(contentType: mimeType),
+                  );
                 } else {
                   final file = File(selectedFile!.path!);
                   await ref.putFile(file);
