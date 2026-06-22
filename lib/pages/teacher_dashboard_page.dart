@@ -19,6 +19,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'note_image_viewer_page.dart';
 import '../components/fresh_stream_builder.dart';
+import '../components/universal_image.dart';
 class TeacherDashboardPage extends StatefulWidget {
   final Map<dynamic, dynamic> teacherData;
   final bool showAdminBackButton;
@@ -2462,8 +2463,8 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                                           child: thumbnailUrl != null && thumbnailUrl.isNotEmpty
                                               ? ClipRRect(
                                                   borderRadius: BorderRadius.circular(15),
-                                                  child: Image.network(
-                                                    thumbnailUrl,
+                                                  child: UniversalImage(
+                                                    imageUrl: thumbnailUrl,
                                                     fit: BoxFit.cover,
                                                     errorBuilder: (ctx, err, stack) => Icon(
                                                       _recordingIcon(rc),
