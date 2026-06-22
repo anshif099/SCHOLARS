@@ -31,16 +31,15 @@ class DefaultFirebaseOptions {
     }
   }
 
-  // TODO: Replace 'YOUR_WEB_APP_ID' with the Web App ID from your Firebase Console
-  // (Go to Firebase Console -> Project Settings -> General -> Your Apps -> Web App)
   static const FirebaseOptions web = FirebaseOptions(
-    apiKey: 'AIzaSyDPJhZ8CSwMlUdN6CdtYU5A_4Eulhh2mnk',
-    appId: 'YOUR_WEB_APP_ID',
+    apiKey: 'AIzaSyB5EnlNN4K7McAsAev_-g3qcllTHc67GCg',
+    appId: '1:727425292908:web:393807034d880028319649',
     messagingSenderId: '727425292908',
     projectId: 'scholars-c23e4',
     authDomain: 'scholars-c23e4.firebaseapp.com',
     databaseURL: 'https://scholars-c23e4-default-rtdb.firebaseio.com',
     storageBucket: 'scholars-c23e4.firebasestorage.app',
+    measurementId: 'G-8WS0QXZCJ7',
   );
 
   static const FirebaseOptions android = FirebaseOptions(
