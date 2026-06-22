@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'firebase_options.dart';
 import 'pages/admin_dashboard_page.dart';
 import 'pages/landing_page.dart';
 import 'pages/live_video_room_page.dart';
@@ -21,7 +22,9 @@ import 'theme/app_theme.dart';
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   try {
     WidgetsFlutterBinding.ensureInitialized();
-    await Firebase.initializeApp();
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
     await CallNotificationService.showIncomingCallFromRemoteMessage(message);
   } catch (_) {
     // Never allow an uncaught exception to kill the background isolate
@@ -32,10 +35,10 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
-    if (kIsWeb) {
-      await Firebase.initializeApp();
-    } else {
-      await Firebase.initializeApp();
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    if (!kIsWeb) {
       FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
     }
   } catch (e) {
