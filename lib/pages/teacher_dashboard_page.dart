@@ -608,16 +608,49 @@ class _TeacherDashboardPageState extends State<TeacherDashboardPage> {
         const SizedBox(height: 16),
         // Stream my students count
         StreamBuilder<DatabaseEvent>(
-          stream: FirebaseDatabase.instance
-              .ref()
-              .child('students')
-              .orderByChild('class_id')
-              .equalTo(widget.teacherData['class_id'])
-              .onValue,
+          stream: widget.teacherData['is_common'] == true
+              ? FirebaseDatabase.instance
+                  .ref()
+                  .child('students')
+                  .onValue
+              : FirebaseDatabase.instance
+                  .ref()
+                  .child('students')
+                  .orderByChild('class_id')
+                  .equalTo(widget.teacherData['class_id'])
+                  .onValue,
           builder: (context, snapshot) {
             int studentsCount = 0;
             if (snapshot.hasData && snapshot.data!.snapshot.value != null) {
-              studentsCount = (snapshot.data!.snapshot.value as Map).length;
+              final rawMap = snapshot.data!.snapshot.value as Map;
+              if (widget.teacherData['is_common'] == true) {
+                final targetType = widget.teacherData['target_type']?.toString();
+                if (targetType == 'class') {
+                  final classIdsMap = widget.teacherData['class_ids'] as Map?;
+                  if (classIdsMap != null) {
+                    studentsCount = rawMap.values.where((s) {
+                      if (s is Map) {
+                        final cid = s['class_id']?.toString();
+                        return cid != null && classIdsMap.containsKey(cid);
+                      }
+                      return false;
+                    }).length;
+                  }
+                } else if (targetType == 'student') {
+                  final studentIdsMap = widget.teacherData['student_ids'] as Map?;
+                  if (studentIdsMap != null) {
+                    studentsCount = rawMap.values.where((s) {
+                      if (s is Map) {
+                        final skey = s['key']?.toString();
+                        return skey != null && studentIdsMap.containsKey(skey);
+                      }
+                      return false;
+                    }).length;
+                  }
+                }
+              } else {
+                studentsCount = rawMap.length;
+              }
             }
             return Row(
               children: [
@@ -873,12 +906,17 @@ class _TeacherDashboardPageState extends State<TeacherDashboardPage> {
         ),
         Expanded(
           child: StreamBuilder<DatabaseEvent>(
-            stream: FirebaseDatabase.instance
-                .ref()
-                .child('students')
-                .orderByChild('class_id')
-                .equalTo(widget.teacherData['class_id'])
-                .onValue,
+            stream: widget.teacherData['is_common'] == true
+                ? FirebaseDatabase.instance
+                    .ref()
+                    .child('students')
+                    .onValue
+                : FirebaseDatabase.instance
+                    .ref()
+                    .child('students')
+                    .orderByChild('class_id')
+                    .equalTo(widget.teacherData['class_id'])
+                    .onValue,
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) {
                 return const Center(child: CircularProgressIndicator());
@@ -898,9 +936,45 @@ class _TeacherDashboardPageState extends State<TeacherDashboardPage> {
               final map = Map<dynamic, dynamic>.from(
                 snapshot.data!.snapshot.value as Map,
               );
-              final students = map.entries.map((e) {
-                return {'key': e.key, ...Map<String, dynamic>.from(e.value)};
+              var students = map.entries.map((e) {
+                return {'key': e.key, ...Map<String, dynamic>.from(e.value as Map)};
               }).toList();
+
+              if (widget.teacherData['is_common'] == true) {
+                final targetType = widget.teacherData['target_type']?.toString();
+                if (targetType == 'class') {
+                  final classIdsMap = widget.teacherData['class_ids'] as Map?;
+                  if (classIdsMap != null) {
+                    students = students.where((s) {
+                      final cid = s['class_id']?.toString();
+                      return cid != null && classIdsMap.containsKey(cid);
+                    }).toList();
+                  } else {
+                    students = [];
+                  }
+                } else if (targetType == 'student') {
+                  final studentIdsMap = widget.teacherData['student_ids'] as Map?;
+                  if (studentIdsMap != null) {
+                    students = students.where((s) {
+                      final skey = s['key']?.toString();
+                      return skey != null && studentIdsMap.containsKey(skey);
+                    }).toList();
+                  } else {
+                    students = [];
+                  }
+                } else {
+                  students = [];
+                }
+              }
+
+              if (students.isEmpty) {
+                return Center(
+                  child: Text(
+                    'No students assigned to your class yet.',
+                    style: GoogleFonts.poppins(color: AppColors.textLight),
+                  ),
+                );
+              }
 
               students.sort(
                 (a, b) => (b['created_at'] as int? ?? 0).compareTo(
