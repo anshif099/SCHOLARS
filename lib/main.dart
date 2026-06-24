@@ -97,9 +97,9 @@ class _AuthGateState extends State<_AuthGate> {
     super.initState();
     _checkLoginState();
     
-    if (!kIsWeb) {
-      CallNotificationService.init();
+    CallNotificationService.init();
 
+    if (!kIsWeb) {
       CallManager.listenToCallEvents((extra) {
         unawaited(_openIncomingClass(extra));
       });
@@ -171,9 +171,7 @@ class _AuthGateState extends State<_AuthGate> {
           if (snapshot.value != null) {
             final st = Map<dynamic, dynamic>.from(snapshot.value as Map);
             st['key'] = key;
-            if (!kIsWeb) {
-              await CallNotificationService.activateForStudent(key);
-            }
+            await CallNotificationService.activateForStudent(key);
             if (mounted) {
               setState(() {
                 _homePage = StudentDashboardPage(studentData: st);
@@ -181,15 +179,24 @@ class _AuthGateState extends State<_AuthGate> {
                 _loginCheckDone = true;
               });
             }
+            if (kIsWeb) {
+              final classId = Uri.base.queryParameters['classId'];
+              final topic = Uri.base.queryParameters['topic'] ?? 'Live Class';
+              if (classId != null && classId.isNotEmpty) {
+                unawaited(_openIncomingClass(<String, dynamic>{
+                  'classId': classId,
+                  'topic': topic,
+                  'startedAt': DateTime.now().millisecondsSinceEpoch.toString(),
+                }));
+              }
+            }
             return;
           }
         } catch (_) {}
       }
       // Cleanup if failed
       await prefs.remove('is_student_logged_in');
-      if (!kIsWeb) {
-        await CallNotificationService.deactivateStudentSession();
-      }
+      await CallNotificationService.deactivateStudentSession();
     }
 
     if (mounted) {

@@ -1583,8 +1583,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       await updateRecordedClass(<String, dynamic>{
         'upload_status': uploadStatus,
         'upload_error': uploadError,
-        if (fileSizeBytes != null) 'file_size_bytes': fileSizeBytes,
-        if (storagePath != null) 'storage_path': storagePath,
+        'file_size_bytes': ?fileSizeBytes,
+        'storage_path': ?storagePath,
       });
     }
 
@@ -1638,7 +1638,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       fileSizeBytes = _webRecordedBytes!.length;
       storagePath =
           'recorded_classes/${widget.classId}/${recordedAt}_360p_1mbpm.webm';
-      final storageRef = FirebaseStorage.instance.ref().child(storagePath!);
+      final storageRef = FirebaseStorage.instance.ref().child(storagePath);
       final customMetadata = <String, String>{
         'class_id': widget.classId,
         'topic': widget.topic,

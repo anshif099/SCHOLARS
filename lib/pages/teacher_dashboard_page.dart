@@ -281,6 +281,8 @@ class _TeacherDashboardPageState extends State<TeacherDashboardPage> {
 
   @override
   Widget build(BuildContext context) {
+    final bool isKeyboardVisible = MediaQuery.of(context).viewInsets.bottom > 0;
+
     return Scaffold(
       backgroundColor: AppColors.background,
       body: Stack(
@@ -302,12 +304,13 @@ class _TeacherDashboardPageState extends State<TeacherDashboardPage> {
             ),
           ),
           // Glassmorphism Bottom Bar
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 30,
-            child: SafeArea(child: _buildFloatingBottomBar()),
-          ),
+          if (!isKeyboardVisible)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 30,
+              child: SafeArea(child: _buildFloatingBottomBar()),
+            ),
         ],
       ),
     );
@@ -608,8 +611,8 @@ class _TeacherDashboardPageState extends State<TeacherDashboardPage> {
           stream: FirebaseDatabase.instance
               .ref()
               .child('students')
-              .orderByChild('teacher_id')
-              .equalTo(widget.teacherData['key'])
+              .orderByChild('class_id')
+              .equalTo(widget.teacherData['class_id'])
               .onValue,
           builder: (context, snapshot) {
             int studentsCount = 0;
@@ -873,8 +876,8 @@ class _TeacherDashboardPageState extends State<TeacherDashboardPage> {
             stream: FirebaseDatabase.instance
                 .ref()
                 .child('students')
-                .orderByChild('teacher_id')
-                .equalTo(widget.teacherData['key'])
+                .orderByChild('class_id')
+                .equalTo(widget.teacherData['class_id'])
                 .onValue,
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) {
@@ -1462,7 +1465,7 @@ class _TeacherDashboardPageState extends State<TeacherDashboardPage> {
               const SizedBox(height: 8),
               if (hasSubjects)
                 DropdownButtonFormField<String>(
-                  value: _selectedSubjectId,
+                  initialValue: _selectedSubjectId,
                   dropdownColor: AppColors.cardBackground,
                   style: GoogleFonts.poppins(color: AppColors.textPrimary, fontSize: 15),
                   decoration: InputDecoration(

@@ -511,6 +511,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
     final isWide = screenWidth >= 600;
+    final bool isKeyboardVisible = MediaQuery.of(context).viewInsets.bottom > 0;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -545,14 +546,15 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           ),
           
           // ── Glassmorphism Floating Bottom Bar ──
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 30, // Hover above the bottom edge
-            child: SafeArea(
-              child: _buildFloatingBottomBar(),
+          if (!isKeyboardVisible)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 30, // Hover above the bottom edge
+              child: SafeArea(
+                child: _buildFloatingBottomBar(),
+              ),
             ),
-          ),
         ],
       ),
     );
@@ -1850,7 +1852,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           ),
           const SizedBox(height: 10),
           DropdownButtonFormField<String>(
-            value: selectedClassId,
+            initialValue: selectedClassId,
             isExpanded: true,
             decoration: InputDecoration(
               prefixIcon: const Icon(

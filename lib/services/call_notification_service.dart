@@ -3,8 +3,11 @@ import 'dart:async';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../pages/live_video_room_page.dart';
 import 'call_manager.dart';
 
 /// Watches a student's class for live-class events and shows a full-screen
@@ -34,7 +37,6 @@ class CallNotificationService {
 
   /// Called once from [main.dart] at startup.
   static Future<void> init() async {
-    if (kIsWeb) return;
     try {
       await _ensureInitialized();
     } catch (e) {
@@ -60,7 +62,6 @@ class CallNotificationService {
   /// Returns true when Android/iOS notification permission is usable and the
   /// student's current FCM token was saved to the database.
   static Future<bool> activateForStudent(String studentKey) async {
-    if (kIsWeb) return false;
     try {
       await _ensureInitialized();
     } catch (e) {
@@ -115,7 +116,6 @@ class CallNotificationService {
   }
 
   static Future<bool> hasSavedToken(String studentKey) async {
-    if (kIsWeb) return false;
     try {
       final tokenSnapshot = await FirebaseDatabase.instance
           .ref()
@@ -134,7 +134,6 @@ class CallNotificationService {
 
   /// Stop all listeners and clean up tokens.
   static Future<void> deactivateStudentSession() async {
-    if (kIsWeb) return;
     final studentKey = _activeStudentKey;
     _activeStudentKey = null;
 
@@ -156,16 +155,9 @@ class CallNotificationService {
   }
 
   /// Show the incoming call UI from an FCM data message.
-  ///
-  /// This runs in **both** the foreground isolate and the background
-  /// isolate spawned by [FirebaseMessaging.onBackgroundMessage].  Every
-  /// operation that touches the file system (SharedPreferences) or the
-  /// network is wrapped in its own try/catch so that a single failure
-  /// cannot prevent the call from being shown.
   static Future<void> showIncomingCallFromRemoteMessage(
     RemoteMessage message,
   ) async {
-    if (kIsWeb) return;
     try {
       final callData = _extractCallData(message);
       if (callData == null) {
@@ -260,11 +252,211 @@ class CallNotificationService {
     final topic = callData['topic']?.toString() ?? 'Live Class';
     final startedAt = callData['startedAt']?.toString();
 
+    if (kIsWeb) {
+      _showWebForegroundCallAlert(classId, topic, teacherName, startedAt);
+      return;
+    }
+
     await CallManager.showIncomingCall(
       name: 'Class Live: $teacherName',
       classId: classId,
       topic: topic,
       startedAt: startedAt,
+    );
+  }
+
+  static void _showWebForegroundCallAlert(
+    String classId,
+    String topic,
+    String teacherName,
+    String? startedAt,
+  ) {
+    final context = navigatorKey.currentContext;
+    if (context == null) return;
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          elevation: 16,
+          backgroundColor: Colors.transparent,
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 400),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF2E2F6E).withValues(alpha: 0.15),
+                  blurRadius: 30,
+                  offset: const Offset(0, 10),
+                ),
+              ],
+            ),
+            padding: const EdgeInsets.all(28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Calling Icon
+                Container(
+                  width: 80,
+                  height: 80,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF2E2F6E).withValues(alpha: 0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.ring_volume_rounded,
+                    size: 36,
+                    color: Color(0xFF2E2F6E),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  'Incoming Class Call',
+                  style: GoogleFonts.poppins(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: const Color(0xFF1F2937),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Teacher $teacherName is inviting you to a live class.',
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.poppins(
+                    fontSize: 14,
+                    color: const Color(0xFF6B7280),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                // Card for Class Topic
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8F9FC),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFE5E7EB)),
+                  ),
+                  child: Column(
+                    children: [
+                      Text(
+                        'TOPIC',
+                        style: GoogleFonts.poppins(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: const Color(0xFF9CA3AF),
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        topic,
+                        style: GoogleFonts.poppins(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: const Color(0xFF2E2F6E),
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 28),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          side: const BorderSide(color: Color(0xFFE5E7EB)),
+                        ),
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: Text(
+                          'Decline',
+                          style: GoogleFonts.poppins(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                            color: const Color(0xFF6B7280),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF2E2F6E),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          elevation: 0,
+                        ),
+                        onPressed: () async {
+                          Navigator.of(context).pop();
+                          
+                          // Navigate to live room
+                          final prefs = await SharedPreferences.getInstance();
+                          final key = prefs.getString('student_data');
+                          
+                          String? participantName;
+                          if (key != null) {
+                            try {
+                              final snapshot = await FirebaseDatabase.instance
+                                  .ref()
+                                  .child('students')
+                                  .child(key)
+                                  .get();
+                              if (snapshot.value is Map) {
+                                final st = Map<dynamic, dynamic>.from(snapshot.value as Map);
+                                participantName = st['name']?.toString();
+                              }
+                            } catch (_) {}
+                          }
+
+                          final nav = navigatorKey.currentState;
+                          if (nav != null) {
+                            unawaited(
+                              nav.push(
+                                MaterialPageRoute(
+                                  builder: (_) => LiveVideoRoomPage(
+                                    isTeacher: false,
+                                    classId: classId,
+                                    topic: topic,
+                                    participantId: key,
+                                    participantName: participantName,
+                                  ),
+                                ),
+                              ),
+                            );
+                          }
+                        },
+                        child: Text(
+                          'Join Class',
+                          style: GoogleFonts.poppins(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -279,11 +471,14 @@ class CallNotificationService {
 
     final messaging = FirebaseMessaging.instance;
     await messaging.setAutoInitEnabled(true);
-    await messaging.setForegroundNotificationPresentationOptions(
-      alert: true,
-      badge: true,
-      sound: true,
-    );
+    
+    if (!kIsWeb) {
+      await messaging.setForegroundNotificationPresentationOptions(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+    }
 
     // FCM foreground listener (fallback path).
     if (!_foregroundMessageListenerAttached) {
@@ -305,10 +500,12 @@ class CallNotificationService {
       provisional: false,
     );
 
-    try {
-      await CallManager.prepareIncomingCallUi();
-    } catch (e) {
-      debugPrint('Incoming call UI permission setup skipped: $e');
+    if (!kIsWeb) {
+      try {
+        await CallManager.prepareIncomingCallUi();
+      } catch (e) {
+        debugPrint('Incoming call UI permission setup skipped: $e');
+      }
     }
 
     return _authorizationCanShowNotifications(settings.authorizationStatus);
@@ -320,7 +517,12 @@ class CallNotificationService {
   }
 
   static Future<bool> _syncCurrentToken(String studentKey) async {
-    final token = await FirebaseMessaging.instance.getToken();
+    String? token;
+    try {
+      token = await FirebaseMessaging.instance.getToken();
+    } catch (e) {
+      debugPrint('FCM getToken failed: $e');
+    }
     if (token == null || token.isEmpty) {
       return false;
     }

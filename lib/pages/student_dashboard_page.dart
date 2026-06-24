@@ -558,6 +558,8 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
 
   @override
   Widget build(BuildContext context) {
+    final bool isKeyboardVisible = MediaQuery.of(context).viewInsets.bottom > 0;
+
     return Scaffold(
       backgroundColor: AppColors.background,
       body: Stack(
@@ -575,12 +577,13 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
             ),
           ),
           // Glassmorphism Bottom Bar
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 30,
-            child: SafeArea(child: _buildFloatingBottomBar()),
-          ),
+          if (!isKeyboardVisible)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 30,
+              child: SafeArea(child: _buildFloatingBottomBar()),
+            ),
         ],
       ),
     );
