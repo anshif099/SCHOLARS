@@ -85,7 +85,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
             Uri.parse(blobUrl),
             videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
           );
-          await _videoPlayerController!.initialize();
+          // Wait for initialization of Blob URL with a 5-second timeout
+          await _videoPlayerController!.initialize().timeout(const Duration(seconds: 5));
           await _videoPlayerController!.setLooping(false);
           await _videoPlayerController!.setPlaybackSpeed(1);
           _createChewieController();
@@ -101,7 +102,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       if (!mounted) return;
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Failed to load video: $e';
+        _errorMessage = 'This video format (VP8/WebM) is not supported by Safari on iPhone. Please play this video on Android or PC, or record future classes using a compatible browser.';
       });
     }
   }

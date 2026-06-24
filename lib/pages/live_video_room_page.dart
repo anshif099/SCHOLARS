@@ -1635,9 +1635,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         setState(() => _statusMessage = 'Uploading video...');
       }
 
+      final recordedMime = _webRecordingHelper.recordedMimeType;
+      final fileExtension = recordedMime.contains('mp4') ? 'mp4' : 'webm';
+
       fileSizeBytes = _webRecordedBytes!.length;
       storagePath =
-          'recorded_classes/${widget.classId}/${recordedAt}_360p_1mbpm.webm';
+          'recorded_classes/${widget.classId}/${recordedAt}_360p_1mbpm.$fileExtension';
       final storageRef = FirebaseStorage.instance.ref().child(storagePath);
       final customMetadata = <String, String>{
         'class_id': widget.classId,
@@ -1658,7 +1661,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       });
 
       final metadata = SettableMetadata(
-        contentType: 'video/webm',
+        contentType: recordedMime,
         customMetadata: customMetadata,
       );
 

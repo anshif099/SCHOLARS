@@ -5,6 +5,9 @@ WebRecordingHelper getHelper() => StubWebRecordingHelper();
 
 class StubWebRecordingHelper implements WebRecordingHelper {
   @override
+  String get recordedMimeType => 'video/mp4';
+
+  @override
   void start(
     dynamic mediaRecorder,
     dynamic stream, {

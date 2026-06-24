@@ -12,10 +12,32 @@ WebRecordingHelper getHelper() => WebRecordingHelperImpl();
 class WebRecordingHelperImpl implements WebRecordingHelper {
   final List<dynamic> _chunks = [];
   dynamic _mediaRecorder;
+  String _actualMimeType = 'video/webm';
 
   web.AudioContext? _audioContext;
   web.MediaStreamAudioDestinationNode? _destination;
   final List<web.MediaStreamAudioSourceNode> _sources = [];
+
+  @override
+  String get recordedMimeType => _actualMimeType;
+
+  String _getSupportedMimeType() {
+    final types = [
+      'video/webm;codecs=h264,opus',
+      'video/webm;codecs=h264',
+      'video/mp4;codecs=h264,opus',
+      'video/mp4;codecs=h264',
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm',
+    ];
+    for (final type in types) {
+      if (html.MediaRecorder.isTypeSupported(type)) {
+        return type;
+      }
+    }
+    return 'video/webm';
+  }
 
   @override
   void start(
@@ -26,6 +48,9 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
     _chunks.clear();
     _mediaRecorder = mediaRecorder;
     _sources.clear();
+
+    final mimeType = _getSupportedMimeType();
+    _actualMimeType = mimeType;
 
     try {
       if (stream is MediaStreamWeb) {
@@ -87,7 +112,7 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
               _chunks.add(blob);
             }
           },
-          mimeType: 'video/webm',
+          mimeType: mimeType,
           timeSlice: 1000,
         );
       } else {
@@ -99,7 +124,7 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
               _chunks.add(blob);
             }
           },
-          mimeType: 'video/webm',
+          mimeType: mimeType,
           timeSlice: 1000,
         );
       }
@@ -115,7 +140,7 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
               _chunks.add(blob);
             }
           },
-          mimeType: 'video/webm',
+          mimeType: mimeType,
           timeSlice: 1000,
         );
       } catch (_) {}
@@ -170,7 +195,7 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
 
     final completer = Completer<Uint8List?>();
     try {
-      final finalBlob = html.Blob(_chunks, 'video/webm');
+      final finalBlob = html.Blob(_chunks, _actualMimeType);
       final reader = html.FileReader();
 
       reader.onLoadEnd.listen((e) {

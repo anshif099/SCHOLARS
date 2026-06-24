@@ -6,6 +6,8 @@ import 'web_recording_helper_stub.dart'
 abstract class WebRecordingHelper {
   factory WebRecordingHelper() => getHelper();
 
+  String get recordedMimeType;
+
   void start(
     dynamic mediaRecorder,
     dynamic stream, {
