@@ -8,6 +8,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../pages/live_video_room_page.dart';
+import '../main.dart';
 import 'call_manager.dart';
 
 /// Watches a student's class for live-class events and shows a full-screen
