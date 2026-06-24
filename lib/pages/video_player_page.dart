@@ -2,10 +2,12 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:chewie/chewie.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart';
+import '../services/video_web_helper.dart';
 import '../theme/app_theme.dart';
 
 class VideoPlayerPage extends StatefulWidget {
@@ -66,8 +68,36 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
         Uri.parse(url),
         videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
       );
-      await _prepareVideoController();
+      // Wait for initialization with an 8-second timeout
+      await _videoPlayerController!.initialize().timeout(const Duration(seconds: 8));
+      await _videoPlayerController!.setLooping(false);
+      await _videoPlayerController!.setPlaybackSpeed(1);
+      _createChewieController();
+
+      if (!mounted) return;
+      setState(() => _isLoading = false);
     } catch (e) {
+      // Fallback: If on Web, try fetching the video as a local Blob URL
+      if (kIsWeb) {
+        try {
+          final blobUrl = await VideoWebHelper().fetchBlobUrl(url);
+          _videoPlayerController = VideoPlayerController.networkUrl(
+            Uri.parse(blobUrl),
+            videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
+          );
+          await _videoPlayerController!.initialize();
+          await _videoPlayerController!.setLooping(false);
+          await _videoPlayerController!.setPlaybackSpeed(1);
+          _createChewieController();
+
+          if (!mounted) return;
+          setState(() => _isLoading = false);
+          return;
+        } catch (blobError) {
+          debugPrint('Blob URL fallback failed: $blobError');
+        }
+      }
+
       if (!mounted) return;
       setState(() {
         _isLoading = false;
@@ -112,7 +142,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
 
     _chewieController = ChewieController(
       videoPlayerController: _videoPlayerController!,
-      autoPlay: true,
+      autoPlay: !kIsWeb,
       looping: false,
       aspectRatio: aspectRatio <= 0 ? 4 / 3 : aspectRatio,
       allowPlaybackSpeedChanging: true,
