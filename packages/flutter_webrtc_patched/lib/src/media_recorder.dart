@@ -23,7 +23,7 @@ class MediaRecorder extends rtc.MediaRecorder {
     bool useFallbackAudio = false,
   }) {
     if (_delegate is MediaRecorderNative) {
-      return (_delegate).start(
+      return _delegate.start(
         path,
         videoTrack: videoTrack,
         audioChannel: audioChannel,
