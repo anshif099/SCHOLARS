@@ -6,7 +6,7 @@ service firebase.storage {
       allow read: if true;
       allow create, update: if request.auth != null
         && (fileName.matches('.*\\.mp4') || fileName.matches('.*\\.webm'))
-        && (request.resource.contentType.startsWith('video/mp4') || request.resource.contentType.startsWith('video/webm'))
+        && (request.resource.contentType.matches('video/mp4.*') || request.resource.contentType.matches('video/webm.*'))
         && request.resource.size < 2 * 1024 * 1024 * 1024;
       allow delete: if request.auth != null;
     }
