@@ -6,10 +6,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 import '../services/video_web_helper.dart';
 import '../theme/app_theme.dart';
+import 'webm_video_player_page.dart';
 
 class VideoPlayerPage extends StatefulWidget {
   /// Firebase Storage download URL (preferred).
@@ -18,12 +18,17 @@ class VideoPlayerPage extends StatefulWidget {
   /// Legacy Base64-encoded video data (fallback for old recordings).
   final String? videoBase64;
 
+  /// MIME type of the video (e.g. 'video/mp4', 'video/webm').
+  /// Used to immediately route WebM to the WebView-based player on native.
+  final String? mimeType;
+
   final String title;
 
   const VideoPlayerPage({
     super.key,
     this.videoUrl,
     this.videoBase64,
+    this.mimeType,
     required this.title,
   });
 
@@ -37,8 +42,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   bool _isLoading = true;
   String? _errorMessage;
   String? _tempFilePath;
-  // Non-null when the video is WebM and cannot be played natively
-  String? _webmUrl;
 
   @override
   void initState() {
@@ -65,20 +68,36 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     });
   }
 
-  /// Returns true if the URL points to a WebM file.
+  /// Returns true when the video is WebM and must be played via WebView.
   bool _isWebmUrl(String url) {
     final lower = url.toLowerCase();
     return lower.contains('.webm') || lower.contains('webm');
   }
 
+  bool _needsWebmPlayer(String url) {
+    if (kIsWeb) return false; // Web browser handles WebM natively
+    // Check explicit mime_type first; fall back to URL inspection
+    final mime = widget.mimeType?.toLowerCase() ?? '';
+    if (mime.contains('webm')) return true;
+    return _isWebmUrl(url);
+  }
+
   Future<void> _initFromUrl(String url) async {
-    // On native platforms, WebM (VP8/VP9) is not supported by video_player.
-    // Detect it early and show the browser-open fallback instead.
-    if (!kIsWeb && _isWebmUrl(url)) {
+    // On native platforms WebM (VP8/VP9) is unsupported by video_player.
+    // Navigate to the WebView-based player which handles it.
+    if (_needsWebmPlayer(url)) {
       if (!mounted) return;
-      setState(() {
-        _isLoading = false;
-        _webmUrl = url;
+      // Replace this page with the WebView player so Back works correctly
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) => WebmVideoPlayerPage(
+              videoUrl: url,
+              title: widget.title,
+            ),
+          ),
+        );
       });
       return;
     }
@@ -229,102 +248,29 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       body: Center(
         child: _isLoading
             ? const CircularProgressIndicator(color: Colors.white)
-            : _webmUrl != null
-                ? _buildWebmFallback(_webmUrl!)
-                : _errorMessage != null
-                    ? Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Icon(Icons.videocam_off_rounded,
-                                color: Colors.white38, size: 64),
-                            const SizedBox(height: 16),
-                            Text(
-                              _errorMessage!,
-                              textAlign: TextAlign.center,
-                              style: GoogleFonts.poppins(
-                                  color: Colors.white70, fontSize: 14),
-                            ),
-                          ],
+            : _errorMessage != null
+                ? Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.videocam_off_rounded,
+                            color: Colors.white38, size: 64),
+                        const SizedBox(height: 16),
+                        Text(
+                          _errorMessage!,
+                          textAlign: TextAlign.center,
+                          style: GoogleFonts.poppins(
+                              color: Colors.white70, fontSize: 14),
                         ),
-                      )
-                    : (_chewieController != null &&
-                            _chewieController!
-                                .videoPlayerController.value.isInitialized)
-                        ? Chewie(controller: _chewieController!)
-                        : const CircularProgressIndicator(color: Colors.white),
-      ),
-    );
-  }
-
-  /// Shown on Android/iOS when the stored video is WebM (VP8/VP9),
-  /// which the native video_player cannot decode.
-  /// The user is offered a button to open the URL in the device browser,
-  /// where Chrome / Firefox CAN play WebM.
-  Widget _buildWebmFallback(String url) {
-    return Padding(
-      padding: const EdgeInsets.all(32),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            width: 80,
-            height: 80,
-            decoration: BoxDecoration(
-              color: Colors.white10,
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: const Icon(Icons.open_in_browser_rounded,
-                color: Colors.white54, size: 44),
-          ),
-          const SizedBox(height: 24),
-          Text(
-            'WebM Video',
-            style: GoogleFonts.poppins(
-              color: Colors.white,
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'This recording is in WebM format, which cannot be played inside the app on this device.\n\nTap the button below to open it in your browser (Chrome / Firefox support WebM).',
-            textAlign: TextAlign.center,
-            style: GoogleFonts.poppins(
-              color: Colors.white60,
-              fontSize: 13,
-              height: 1.5,
-            ),
-          ),
-          const SizedBox(height: 32),
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.accentRed,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14)),
-            ),
-            onPressed: () async {
-              final uri = Uri.parse(url);
-              if (await canLaunchUrl(uri)) {
-                await launchUrl(uri, mode: LaunchMode.externalApplication);
-              } else {
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Could not open browser. Please copy the link manually.'),
+                      ],
                     ),
-                  );
-                }
-              }
-            },
-            icon: const Icon(Icons.open_in_browser_rounded),
-            label: Text('Open in Browser',
-                style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
-          ),
-        ],
+                  )
+                : (_chewieController != null &&
+                        _chewieController!
+                            .videoPlayerController.value.isInitialized)
+                    ? Chewie(controller: _chewieController!)
+                    : const CircularProgressIndicator(color: Colors.white),
       ),
     );
   }

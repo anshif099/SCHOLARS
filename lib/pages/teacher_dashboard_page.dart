@@ -2673,6 +2673,7 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                                                   builder: (_) => VideoPlayerPage(
                                                     videoUrl: hasUrl ? rc['video_url'] : null,
                                                     videoBase64: hasBase64 ? rc['video_base64'] : null,
+                                                    mimeType: rc['mime_type']?.toString(),
                                                     title: rc['topic'] ?? 'Recorded Class',
                                                   ),
                                                 ),

@@ -1669,6 +1669,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
             'video_url': videoUrl,
             'upload_status': uploadStatus,
             'storage_path': storagePath,
+            'mime_type': recordedMime,
           });
           return true;
         } else {
@@ -1748,6 +1749,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                 'storage_path': storagePath,
                 'file_size_bytes': fileSizeBytes,
                 'upload_error': null,
+                'mime_type': 'video/mp4',
               });
 
               try {
