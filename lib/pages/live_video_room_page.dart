@@ -350,20 +350,14 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         ? <String, dynamic>{
             'audio': true,
             'video': <String, dynamic>{
-              'width': {
-                'min': _callVideoWidth,
+              'width': <String, dynamic>{
                 'ideal': _callVideoWidth,
-                'max': _callVideoWidth
               },
-              'height': {
-                'min': _callVideoHeight,
+              'height': <String, dynamic>{
                 'ideal': _callVideoHeight,
-                'max': _callVideoHeight
               },
-              'frameRate': {
-                'min': _callVideoMinFrameRate,
+              'frameRate': <String, dynamic>{
                 'ideal': _callVideoMaxFrameRate,
-                'max': _callVideoMaxFrameRate
               },
               'facingMode': 'user',
             },
