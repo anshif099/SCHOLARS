@@ -140,17 +140,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         'urls': <String>[
           'stun:stun.l.google.com:19302',
           'stun:stun1.l.google.com:19302',
-          'stun:openrelay.metered.ca:80',
+          'stun:stun.services.mozilla.com',
         ],
-      },
-      <String, dynamic>{
-        'urls': <String>[
-          'turn:openrelay.metered.ca:80',
-          'turn:openrelay.metered.ca:443',
-          'turn:openrelay.metered.ca:443?transport=tcp',
-        ],
-        'username': 'openrelayproject',
-        'credential': 'openrelayproject',
       },
     ],
     'sdpSemantics': 'unified-plan',
