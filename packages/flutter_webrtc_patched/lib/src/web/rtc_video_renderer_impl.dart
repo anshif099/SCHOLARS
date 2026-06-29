@@ -80,6 +80,15 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
   @override
   set muted(bool mute) => _audioElement?.muted = _muted = mute;
 
+  double _volume = 1.0;
+
+  double get volume => _volume;
+
+  set volume(double val) {
+    _volume = val;
+    _audioElement?.volume = val;
+  }
+
   @override
   bool get renderVideo => _srcObject != null;
 
@@ -136,6 +145,7 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
         _audioElement = web.HTMLAudioElement()
           ..id = _elementIdForAudio
           ..muted = stream.ownerTag == 'local'
+          ..volume = _volume
           ..autoplay = true;
         _ensureAudioManagerDiv().append(_audioElement!);
       }
@@ -186,6 +196,7 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
         _audioElement = web.HTMLAudioElement()
           ..id = _elementIdForAudio
           ..muted = stream.ownerTag == 'local'
+          ..volume = _volume
           ..autoplay = true;
         _ensureAudioManagerDiv().append(_audioElement!);
       }

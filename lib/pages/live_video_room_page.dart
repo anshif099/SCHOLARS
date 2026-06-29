@@ -236,11 +236,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   }
 
   Future<void> _disableScreenAwake() async {
-    try {
-      await WakelockPlus.disable();
-    } catch (error, stackTrace) {
-      _reportNonFatalError('disable screen awake', error, stackTrace);
-    }
+    // Keep screen awake globally per user requirements
   }
 
   Future<void> _bootstrapCall() async {
@@ -254,9 +250,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         return;
       }
 
-      if (!WebRTC.platformIsWeb) {
-        await Helper.setSpeakerphoneOnButPreferBluetooth();
-      }
       if (WebRTC.platformIsIOS) {
         await Helper.ensureAudioSession();
       }
@@ -266,6 +259,18 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       }
 
       await _setupLocalMedia();
+
+      if (!WebRTC.platformIsWeb) {
+        // Delay slightly to ensure AudioSwitchManager is active/started,
+        // then force speakerphone to be ON by default.
+        Future.delayed(const Duration(milliseconds: 500), () async {
+          try {
+            await Helper.setSpeakerphoneOn(true);
+          } catch (e) {
+            debugPrint('Failed to set speakerphone on at start: $e');
+          }
+        });
+      }
       _listenToParticipants();
       await _registerParticipant();
       _listenForSignaling();
@@ -957,6 +962,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     }
 
     renderer.srcObject = stream;
+
+    if (kIsWeb) {
+      renderer.volume = _isSpeakerOn ? 1.0 : 0.15;
+    }
 
     if (kIsWeb && _mediaRecorder != null) {
       _webRecordingHelper.addRemoteStream(stream);
@@ -2054,16 +2063,25 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   }
 
   Future<void> _toggleSpeaker() async {
-    if (WebRTC.platformIsWeb) return;
-    try {
-      final nextVal = !_isSpeakerOn;
-      await Helper.setSpeakerphoneOn(nextVal);
+    final nextVal = !_isSpeakerOn;
+    if (kIsWeb) {
       setState(() {
         _isSpeakerOn = nextVal;
       });
-      _showSnackBar(nextVal ? 'Speakerphone turned on' : 'Earpiece turned on');
-    } catch (e) {
-      debugPrint('Failed to toggle speakerphone: $e');
+      for (final renderer in _remoteRenderers.values) {
+        renderer.volume = nextVal ? 1.0 : 0.15;
+      }
+      _showSnackBar(nextVal ? 'Volume set to high' : 'Volume set to normal');
+    } else {
+      try {
+        await Helper.setSpeakerphoneOn(nextVal);
+        setState(() {
+          _isSpeakerOn = nextVal;
+        });
+        _showSnackBar(nextVal ? 'Speakerphone turned on' : 'Earpiece turned on');
+      } catch (e) {
+        debugPrint('Failed to toggle speakerphone: $e');
+      }
     }
   }
 

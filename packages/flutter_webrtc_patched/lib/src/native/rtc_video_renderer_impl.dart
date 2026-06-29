@@ -166,6 +166,12 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
     Helper.setMicrophoneMute(mute, _srcObject!.getAudioTracks()[0]);
   }
 
+  double _volume = 1.0;
+  double get volume => _volume;
+  set volume(double val) {
+    _volume = val;
+  }
+
   @override
   Future<bool> audioOutput(String deviceId) async {
     try {

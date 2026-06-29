@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'firebase_options.dart';
 import 'pages/admin_dashboard_page.dart';
@@ -54,6 +55,13 @@ void main() async {
         statusBarBrightness: Brightness.light,
       ),
     );
+  }
+
+  // Keep screen awake globally when app is in foreground
+  try {
+    await WakelockPlus.enable();
+  } catch (e) {
+    debugPrint("Wakelock enabling failed: $e");
   }
 
   runApp(const ScholarsApp());
