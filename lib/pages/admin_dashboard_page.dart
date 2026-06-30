@@ -25,6 +25,10 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   int _teachersCount = 0;
   int _studentsCount = 0;
   int _classesCount = 0;
+  Map<dynamic, dynamic>? _teachersMap;
+  Map<dynamic, dynamic>? _studentsMap;
+  bool _isTeachersLoading = true;
+  bool _isStudentsLoading = true;
   final TextEditingController _classSearchController = TextEditingController();
   final TextEditingController _studentSearchController = TextEditingController();
   bool _isClassSearchVisible = false;
@@ -203,20 +207,29 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
             .toSet();
         if (mounted) {
           setState(() {
+            _teachersMap = map;
             _teachersCount = map.length;
             _classesCount = classIds.length;
+            _isTeachersLoading = false;
           });
         }
       } else {
         if (mounted) {
           setState(() {
+            _teachersMap = {};
             _teachersCount = 0;
             _classesCount = 0;
+            _isTeachersLoading = false;
           });
         }
       }
     }, onError: (err) {
       debugPrint('Error loading teachers overview: $err');
+      if (mounted) {
+        setState(() {
+          _isTeachersLoading = false;
+        });
+      }
     });
 
     _studentsSubscription = _studentsStream.listen((event) {
@@ -224,18 +237,27 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         final map = Map<dynamic, dynamic>.from(event.snapshot.value as Map);
         if (mounted) {
           setState(() {
+            _studentsMap = map;
             _studentsCount = map.length;
+            _isStudentsLoading = false;
           });
         }
       } else {
         if (mounted) {
           setState(() {
+            _studentsMap = {};
             _studentsCount = 0;
+            _isStudentsLoading = false;
           });
         }
       }
     }, onError: (err) {
       debugPrint('Error loading students overview: $err');
+      if (mounted) {
+        setState(() {
+          _isStudentsLoading = false;
+        });
+      }
     });
   }
 
@@ -1372,21 +1394,25 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
               ),
             ),
           ),
+        if (_isTeachersLoading && _teachersMap == null)
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+            child: LinearProgressIndicator(
+              backgroundColor: AppColors.divider,
+              valueColor: AlwaysStoppedAnimation<Color>(AppColors.primaryNavy),
+            ),
+          ),
         Expanded(
-          child: StreamBuilder<DatabaseEvent>(
-            stream: _teachersStream,
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
+          child: Builder(
+            builder: (context) {
+              if (_isTeachersLoading && _teachersMap == null) {
                 return const Center(
                   child: CircularProgressIndicator(
                     valueColor: AlwaysStoppedAnimation<Color>(AppColors.primaryNavy),
                   ),
                 );
               }
-              if (snapshot.hasError) {
-                return Center(child: Text('Error: ${snapshot.error}'));
-              }
-              if (!snapshot.hasData || snapshot.data!.snapshot.value == null) {
+              if (_teachersMap == null || _teachersMap!.isEmpty) {
                 return Center(
                   child: Text(
                     'No classes registered yet.',
@@ -1395,9 +1421,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                 );
               }
 
-              final teachersMap = Map<dynamic, dynamic>.from(
-                  snapshot.data!.snapshot.value as Map);
-              final teachers = teachersMap.entries.map((e) {
+              final teachers = _teachersMap!.entries.map((e) {
                 return {'key': e.key, ...Map<String, dynamic>.from(e.value)};
               }).toList();
 
@@ -1770,15 +1794,14 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                 }),
                               ],
                             );
-                          );
-                        },
-                      );
-                    }
+                          },
+                        );
+                      }
+                    ),
                   ),
-                ),
-              ],
-            );
-          }
+                ],
+              );
+            }
 
   Widget _buildStudentFilters(List<_ClassFilterOption> classOptions) {
     final selectedClassId =
