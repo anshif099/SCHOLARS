@@ -1376,8 +1376,12 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           child: StreamBuilder<DatabaseEvent>(
             stream: _teachersStream,
             builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
+              if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
+                return const Center(
+                  child: CircularProgressIndicator(
+                    valueColor: AlwaysStoppedAnimation<Color>(AppColors.primaryNavy),
+                  ),
+                );
               }
               if (snapshot.hasError) {
                 return Center(child: Text('Error: ${snapshot.error}'));
@@ -1576,12 +1580,12 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           child: StreamBuilder<DatabaseEvent>(
             stream: _teachersStream,
             builder: (context, teacherSnapshot) {
-              if (teacherSnapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
-
               final teacherByKey = <String, Map<String, dynamic>>{};
               final teacherByClassId = <String, Map<String, dynamic>>{};
+
+              final bool isTeachersLoading =
+                  teacherSnapshot.connectionState == ConnectionState.waiting &&
+                      !teacherSnapshot.hasData;
 
               if (teacherSnapshot.hasData &&
                   teacherSnapshot.data!.snapshot.value != null) {
@@ -1612,14 +1616,31 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
               return Column(
                 children: [
                   _buildStudentFilters(classOptions),
+                  if (isTeachersLoading)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                      child: LinearProgressIndicator(
+                        backgroundColor: AppColors.divider,
+                        valueColor: AlwaysStoppedAnimation<Color>(AppColors.primaryNavy),
+                      ),
+                    ),
                   Expanded(
                     child: StreamBuilder<DatabaseEvent>(
                       stream: _studentsStream,
                       builder: (context, snapshot) {
-                        if (snapshot.connectionState ==
-                            ConnectionState.waiting) {
+                        final bool isStudentsLoading =
+                            snapshot.connectionState == ConnectionState.waiting &&
+                                !snapshot.hasData;
+
+                        if (isStudentsLoading) {
                           return const Center(
-                              child: CircularProgressIndicator());
+                            child: Padding(
+                              padding: EdgeInsets.all(24.0),
+                              child: CircularProgressIndicator(
+                                valueColor: AlwaysStoppedAnimation<Color>(AppColors.primaryNavy),
+                              ),
+                            ),
+                          );
                         }
                         if (snapshot.hasError) {
                           return Center(
