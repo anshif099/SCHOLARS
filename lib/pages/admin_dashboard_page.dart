@@ -36,8 +36,8 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       FirebaseDatabase.instance.ref().child('teachers');
   late final DatabaseReference _studentsRef =
       FirebaseDatabase.instance.ref().child('students');
-  Stream<DatabaseEvent> get _teachersStream => _teachersRef.onValue;
-  Stream<DatabaseEvent> get _studentsStream => _studentsRef.onValue;
+  late final Stream<DatabaseEvent> _teachersStream = _teachersRef.onValue;
+  late final Stream<DatabaseEvent> _studentsStream = _studentsRef.onValue;
 
   StreamSubscription<DatabaseEvent>? _teachersSubscription;
   StreamSubscription<DatabaseEvent>? _studentsSubscription;
@@ -2682,6 +2682,9 @@ class _AdminSettingsTabState extends State<_AdminSettingsTab> {
   final _commonClassIdController = TextEditingController();
   final _targetClassIdsController = TextEditingController();
 
+  late final Stream<DatabaseEvent> _teachersStream =
+      FirebaseDatabase.instance.ref().child('teachers').onValue;
+
   String _targetType = 'class'; // 'class' or 'student'
   bool _isLoading = false;
   String _commonClassId = '';
@@ -2931,7 +2934,7 @@ class _AdminSettingsTabState extends State<_AdminSettingsTab> {
         ),
         const SizedBox(height: 12),
         StreamBuilder<DatabaseEvent>(
-          stream: FirebaseDatabase.instance.ref().child('teachers').onValue,
+          stream: _teachersStream,
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.waiting) {
               return const Center(child: CircularProgressIndicator());
