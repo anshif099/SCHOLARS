@@ -1562,6 +1562,34 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   }
 
   Widget _buildStudentsListContent() {
+    final bool isTeachersLoading = _isTeachersLoading && _teachersMap == null;
+    final bool isStudentsLoading = _isStudentsLoading && _studentsMap == null;
+
+    final teacherByKey = <String, Map<String, dynamic>>{};
+    final teacherByClassId = <String, Map<String, dynamic>>{};
+
+    if (_teachersMap != null) {
+      for (final entry in _teachersMap!.entries) {
+        if (entry.value is! Map) continue;
+
+        final teacher = <String, dynamic>{
+          'key': entry.key,
+          ...Map<String, dynamic>.from(entry.value),
+        };
+        final key = entry.key?.toString();
+        final classId = teacher['class_id']?.toString();
+
+        if (key != null && key.isNotEmpty) {
+          teacherByKey[key] = teacher;
+        }
+        if (classId != null && classId.isNotEmpty) {
+          teacherByClassId[classId] = teacher;
+        }
+      }
+    }
+
+    final classOptions = _buildClassFilterOptions(teacherByClassId);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1576,90 +1604,38 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
             ),
           ),
         ),
+        _buildStudentFilters(classOptions),
+        if (isTeachersLoading || isStudentsLoading)
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+            child: LinearProgressIndicator(
+              backgroundColor: AppColors.divider,
+              valueColor: AlwaysStoppedAnimation<Color>(AppColors.primaryNavy),
+            ),
+          ),
         Expanded(
-          child: StreamBuilder<DatabaseEvent>(
-            stream: _teachersStream,
-            builder: (context, teacherSnapshot) {
-              final teacherByKey = <String, Map<String, dynamic>>{};
-              final teacherByClassId = <String, Map<String, dynamic>>{};
-
-              final bool isTeachersLoading =
-                  teacherSnapshot.connectionState == ConnectionState.waiting &&
-                      !teacherSnapshot.hasData;
-
-              if (teacherSnapshot.hasData &&
-                  teacherSnapshot.data!.snapshot.value != null) {
-                final teachersMap = Map<dynamic, dynamic>.from(
-                  teacherSnapshot.data!.snapshot.value as Map,
+          child: Builder(
+            builder: (context) {
+              if (isStudentsLoading) {
+                return const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(24.0),
+                    child: CircularProgressIndicator(
+                      valueColor: AlwaysStoppedAnimation<Color>(AppColors.primaryNavy),
+                    ),
+                  ),
                 );
-                for (final entry in teachersMap.entries) {
-                  if (entry.value is! Map) continue;
-
-                  final teacher = <String, dynamic>{
-                    'key': entry.key,
-                    ...Map<String, dynamic>.from(entry.value),
-                  };
-                  final key = entry.key?.toString();
-                  final classId = teacher['class_id']?.toString();
-
-                  if (key != null && key.isNotEmpty) {
-                    teacherByKey[key] = teacher;
-                  }
-                  if (classId != null && classId.isNotEmpty) {
-                    teacherByClassId[classId] = teacher;
-                  }
-                }
+              }
+              if (_studentsMap == null || _studentsMap!.isEmpty) {
+                return Center(
+                  child: Text(
+                    'No students registered yet.',
+                    style: GoogleFonts.poppins(color: AppColors.textLight),
+                  ),
+                );
               }
 
-              final classOptions = _buildClassFilterOptions(teacherByClassId);
-
-              return Column(
-                children: [
-                  _buildStudentFilters(classOptions),
-                  if (isTeachersLoading)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-                      child: LinearProgressIndicator(
-                        backgroundColor: AppColors.divider,
-                        valueColor: AlwaysStoppedAnimation<Color>(AppColors.primaryNavy),
-                      ),
-                    ),
-                  Expanded(
-                    child: StreamBuilder<DatabaseEvent>(
-                      stream: _studentsStream,
-                      builder: (context, snapshot) {
-                        final bool isStudentsLoading =
-                            snapshot.connectionState == ConnectionState.waiting &&
-                                !snapshot.hasData;
-
-                        if (isStudentsLoading) {
-                          return const Center(
-                            child: Padding(
-                              padding: EdgeInsets.all(24.0),
-                              child: CircularProgressIndicator(
-                                valueColor: AlwaysStoppedAnimation<Color>(AppColors.primaryNavy),
-                              ),
-                            ),
-                          );
-                        }
-                        if (snapshot.hasError) {
-                          return Center(
-                              child: Text('Error: ${snapshot.error}'));
-                        }
-                        if (!snapshot.hasData ||
-                            snapshot.data!.snapshot.value == null) {
-                          return Center(
-                            child: Text(
-                              'No students registered yet.',
-                              style: GoogleFonts.poppins(
-                                  color: AppColors.textLight),
-                            ),
-                          );
-                        }
-
-                        final map = Map<dynamic, dynamic>.from(
-                          snapshot.data!.snapshot.value as Map,
-                        );
+              final map = _studentsMap!;
                         final selectedClassId = classOptions.any((option) =>
                                 option.classId == _selectedStudentClassId)
                             ? _selectedStudentClassId
@@ -1794,19 +1770,15 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                 }),
                               ],
                             );
-                          },
-                        );
-                      },
-                    ),
+                          );
+                        },
+                      );
+                    }
                   ),
-                ],
-              );
-            },
-          ),
-        ),
-      ],
-    );
-  }
+                ),
+              ],
+            );
+          }
 
   Widget _buildStudentFilters(List<_ClassFilterOption> classOptions) {
     final selectedClassId =
