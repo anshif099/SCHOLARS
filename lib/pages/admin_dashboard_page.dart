@@ -36,8 +36,8 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       FirebaseDatabase.instance.ref().child('teachers');
   late final DatabaseReference _studentsRef =
       FirebaseDatabase.instance.ref().child('students');
-  late final Stream<DatabaseEvent> _teachersStream = _teachersRef.onValue;
-  late final Stream<DatabaseEvent> _studentsStream = _studentsRef.onValue;
+  late final Stream<DatabaseEvent> _teachersStream = _teachersRef.onValue.asBroadcastStream();
+  late final Stream<DatabaseEvent> _studentsStream = _studentsRef.onValue.asBroadcastStream();
 
   StreamSubscription<DatabaseEvent>? _teachersSubscription;
   StreamSubscription<DatabaseEvent>? _studentsSubscription;
@@ -2683,7 +2683,7 @@ class _AdminSettingsTabState extends State<_AdminSettingsTab> {
   final _targetClassIdsController = TextEditingController();
 
   late final Stream<DatabaseEvent> _teachersStream =
-      FirebaseDatabase.instance.ref().child('teachers').onValue;
+      FirebaseDatabase.instance.ref().child('teachers').onValue.asBroadcastStream();
 
   String _targetType = 'class'; // 'class' or 'student'
   bool _isLoading = false;
