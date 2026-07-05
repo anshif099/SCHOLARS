@@ -137,6 +137,23 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   PlatformFile? _localSharedFile;
   bool _showWhiteboardToolbar = true;
   final GlobalKey _canvasKey = GlobalKey();
+  double _imageAspectRatio = 16 / 9;
+
+  void _resolveImageAspectRatio(ImageProvider provider) {
+    final ImageStream stream = provider.resolve(const ImageConfiguration());
+    ImageStreamListener? listener;
+    listener = ImageStreamListener((ImageInfo info, bool syncCall) {
+      if (mounted) {
+        setState(() {
+          _imageAspectRatio = info.image.width / info.image.height;
+        });
+      }
+      if (listener != null) {
+        stream.removeListener(listener);
+      }
+    });
+    stream.addListener(listener);
+  }
 
   DatabaseReference get _liveClassRef => FirebaseDatabase.instance
       .ref()
@@ -2647,6 +2664,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
             _sharedDocPage = newPage;
             _localPdfPath = null;
             _showWhiteboardToolbar = true;
+            if (newType == 'image' && newUrl != null) {
+              _imageAspectRatio = 16 / 9; // Reset to default until resolved
+              _resolveImageAspectRatio(NetworkImage(newUrl));
+            } else if (newType == 'pdf') {
+              _imageAspectRatio = 1.414; // Default landscape A4 aspect ratio for presentation slides
+            }
           });
           if (newUrl != null && newType == 'pdf' && !kIsWeb) {
             unawaited(_downloadPdf(newUrl));
@@ -2802,6 +2825,17 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         _localSharedFile = file;
         _isProcessing = true;
         _statusMessage = 'Uploading shared document...';
+        if (fileType == 'image') {
+          ImageProvider provider;
+          if (kIsWeb) {
+            provider = MemoryImage(file.bytes!);
+          } else {
+            provider = FileImage(File(file.path!));
+          }
+          _resolveImageAspectRatio(provider);
+        } else {
+          _imageAspectRatio = 1.414;
+        }
       });
 
       final authUid = await FirebaseUploadAuthService.ensureSignedIn();
@@ -2884,82 +2918,96 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         _buildParticipantVideoStrip(),
         Expanded(
           child: Stack(
-            key: _canvasKey,
             children: [
               Positioned.fill(
                 child: Container(
-                  color: Colors.white,
-                  child: isImage
-                      ? _buildSharedImageView()
-                      : (isPdf ? _buildPdfView() : const SizedBox.shrink()),
-                ),
-              ),
-              Positioned.fill(
-                child: widget.isTeacher
-                    ? GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onPanStart: _isDrawingMode
-                            ? (details) {
-                                final box = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
-                                if (box == null) return;
-                                final localPos = box.globalToLocal(details.globalPosition);
-                                final normX = (localPos.dx / box.size.width).clamp(0.0, 1.0);
-                                final normY = (localPos.dy / box.size.height).clamp(0.0, 1.0);
-                                _onDrawingStart(Offset(normX, normY));
-                              }
-                            : null,
-                        onPanUpdate: _isDrawingMode
-                            ? (details) {
-                                final box = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
-                                if (box == null) return;
-                                final localPos = box.globalToLocal(details.globalPosition);
-                                final normX = (localPos.dx / box.size.width).clamp(0.0, 1.0);
-                                final normY = (localPos.dy / box.size.height).clamp(0.0, 1.0);
-                                _onDrawingUpdate(Offset(normX, normY));
-                              }
-                            : null,
-                        onPanEnd: _isDrawingMode
-                            ? (details) {
-                                _onDrawingEnd();
-                              }
-                            : null,
-                        child: CustomPaint(
-                          painter: DrawingPainter(
-                            completedStrokes: _completedStrokes,
-                            currentStroke: _currentStroke,
-                          ),
-                          size: Size.infinite,
-                        ),
-                      )
-                    : IgnorePointer(
-                        child: CustomPaint(
-                          painter: DrawingPainter(
-                            completedStrokes: _completedStrokes,
-                            currentStroke: _currentStroke,
-                          ),
-                          size: Size.infinite,
-                        ),
-                      ),
-              ),
-              if (isPdf && _isDownloadingPdf)
-                Positioned.fill(
-                  child: Container(
-                    color: Colors.black54,
-                    child: const Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
+                  color: const Color(0xFF1C1C1E),
+                  child: Center(
+                    child: AspectRatio(
+                      aspectRatio: _imageAspectRatio,
+                      child: Stack(
+                        key: _canvasKey,
                         children: [
-                          CircularProgressIndicator(color: Colors.white),
-                          SizedBox(height: 16),
-                          Text(
-                            'Downloading PDF...',
-                            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
+                          Positioned.fill(
+                            child: Container(
+                              color: Colors.white,
+                              child: isImage
+                                  ? _buildSharedImageView()
+                                  : (isPdf ? _buildPdfView() : const SizedBox.shrink()),
+                            ),
                           ),
+                          Positioned.fill(
+                            child: widget.isTeacher
+                                ? GestureDetector(
+                                    behavior: HitTestBehavior.opaque,
+                                    onPanStart: _isDrawingMode
+                                        ? (details) {
+                                            final box = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
+                                            if (box == null) return;
+                                            final localPos = box.globalToLocal(details.globalPosition);
+                                            final normX = (localPos.dx / box.size.width).clamp(0.0, 1.0);
+                                            final normY = (localPos.dy / box.size.height).clamp(0.0, 1.0);
+                                            _onDrawingStart(Offset(normX, normY));
+                                          }
+                                        : null,
+                                    onPanUpdate: _isDrawingMode
+                                        ? (details) {
+                                            final box = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
+                                            if (box == null) return;
+                                            final localPos = box.globalToLocal(details.globalPosition);
+                                            final normX = (localPos.dx / box.size.width).clamp(0.0, 1.0);
+                                            final normY = (localPos.dy / box.size.height).clamp(0.0, 1.0);
+                                            _onDrawingUpdate(Offset(normX, normY));
+                                          }
+                                        : null,
+                                    onPanEnd: _isDrawingMode
+                                        ? (details) {
+                                            _onDrawingEnd();
+                                          }
+                                        : null,
+                                    child: CustomPaint(
+                                      painter: DrawingPainter(
+                                        completedStrokes: _completedStrokes,
+                                        currentStroke: _currentStroke,
+                                      ),
+                                      size: Size.infinite,
+                                    ),
+                                  )
+                                : IgnorePointer(
+                                    child: CustomPaint(
+                                      painter: DrawingPainter(
+                                        completedStrokes: _completedStrokes,
+                                        currentStroke: _currentStroke,
+                                      ),
+                                      size: Size.infinite,
+                                    ),
+                                  ),
+                          ),
+                          if (isPdf && _isDownloadingPdf)
+                            Positioned.fill(
+                              child: Container(
+                                color: Colors.black54,
+                                child: const Center(
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      CircularProgressIndicator(color: Colors.white),
+                                      SizedBox(height: 16),
+                                      Text(
+                                        'Downloading PDF...',
+                                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
                         ],
                       ),
                     ),
                   ),
                 ),
+              ),
               _buildWhiteboardToolbar(),
             ],
           ),
