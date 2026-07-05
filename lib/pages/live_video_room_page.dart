@@ -20,6 +20,7 @@ import '../services/web_recording_helper.dart';
 import '../services/firebase_upload_auth_service.dart';
 import '../services/permission_service.dart';
 import '../theme/app_theme.dart';
+import '../components/universal_image.dart';
 
 class LiveVideoRoomPage extends StatefulWidget {
   static final Set<String> _activeSessionKeys = <String>{};
@@ -2983,13 +2984,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       }
     }
 
-    return Image.network(
-      _sharedDocUrl!,
+    return UniversalImage(
+      imageUrl: _sharedDocUrl!,
       fit: BoxFit.contain,
-      loadingBuilder: (context, child, loadingProgress) {
-        if (loadingProgress == null) return child;
-        return const Center(child: CircularProgressIndicator());
-      },
       errorBuilder: (context, error, stackTrace) => const Center(
         child: Icon(Icons.broken_image, color: Colors.grey, size: 48),
       ),
