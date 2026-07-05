@@ -135,6 +135,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   List<Offset> _activePoints = [];
   PlatformFile? _localSharedFile;
   bool _showWhiteboardToolbar = true;
+  final GlobalKey _canvasKey = GlobalKey();
 
   DatabaseReference get _liveClassRef => FirebaseDatabase.instance
       .ref()
@@ -2882,6 +2883,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         _buildParticipantVideoStrip(),
         Expanded(
           child: Stack(
+            key: _canvasKey,
             children: [
               Positioned.fill(
                 child: Container(
@@ -2897,16 +2899,18 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                         behavior: HitTestBehavior.opaque,
                         onPanStart: _isDrawingMode
                             ? (details) {
-                                final box = context.findRenderObject() as RenderBox;
+                                final box = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
+                                if (box == null) return;
                                 final localPos = box.globalToLocal(details.globalPosition);
-                                final normX = localPos.dx / box.size.width;
-                                final normY = localPos.dy / box.size.height;
+                                final normX = (localPos.dx / box.size.width).clamp(0.0, 1.0);
+                                final normY = (localPos.dy / box.size.height).clamp(0.0, 1.0);
                                 _onDrawingStart(Offset(normX, normY));
                               }
                             : null,
                         onPanUpdate: _isDrawingMode
                             ? (details) {
-                                final box = context.findRenderObject() as RenderBox;
+                                final box = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
+                                if (box == null) return;
                                 final localPos = box.globalToLocal(details.globalPosition);
                                 final normX = (localPos.dx / box.size.width).clamp(0.0, 1.0);
                                 final normY = (localPos.dy / box.size.height).clamp(0.0, 1.0);
