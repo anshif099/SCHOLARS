@@ -133,6 +133,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   PDFViewController? _pdfController;
   int _lastSyncTime = 0;
   List<Offset> _activePoints = [];
+  PlatformFile? _localSharedFile;
 
   DatabaseReference get _liveClassRef => FirebaseDatabase.instance
       .ref()
@@ -2660,6 +2661,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
           _sharedDocType = null;
           _sharedDocPage = 1;
           _localPdfPath = null;
+          _localSharedFile = null;
         });
       }
     });
@@ -2793,6 +2795,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       final fileType = isPdf ? 'pdf' : 'image';
 
       setState(() {
+        _localSharedFile = file;
         _isProcessing = true;
         _statusMessage = 'Uploading shared document...';
       });
@@ -2854,6 +2857,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   Future<void> _stopSharingDocument() async {
     setState(() {
       _isProcessing = true;
+      _localSharedFile = null;
     });
     try {
       await _clearDrawings();
@@ -2881,17 +2885,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                 child: Container(
                   color: Colors.white,
                   child: isImage
-                      ? Image.network(
-                          _sharedDocUrl!,
-                          fit: BoxFit.contain,
-                          loadingBuilder: (context, child, loadingProgress) {
-                            if (loadingProgress == null) return child;
-                            return const Center(child: CircularProgressIndicator());
-                          },
-                          errorBuilder: (context, error, stackTrace) => const Center(
-                            child: Icon(Icons.broken_image, color: Colors.grey, size: 48),
-                          ),
-                        )
+                      ? _buildSharedImageView()
                       : (isPdf ? _buildPdfView() : const SizedBox.shrink()),
                 ),
               ),
@@ -2967,7 +2961,64 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     );
   }
 
+  Widget _buildSharedImageView() {
+    final localFile = _localSharedFile;
+    if (widget.isTeacher && localFile != null) {
+      if (kIsWeb) {
+        final bytes = localFile.bytes;
+        if (bytes != null) {
+          return Image.memory(bytes, fit: BoxFit.contain);
+        }
+      } else {
+        final path = localFile.path;
+        if (path != null) {
+          return Image.file(File(path), fit: BoxFit.contain);
+        }
+      }
+    }
+
+    return Image.network(
+      _sharedDocUrl!,
+      fit: BoxFit.contain,
+      loadingBuilder: (context, child, loadingProgress) {
+        if (loadingProgress == null) return child;
+        return const Center(child: CircularProgressIndicator());
+      },
+      errorBuilder: (context, error, stackTrace) => const Center(
+        child: Icon(Icons.broken_image, color: Colors.grey, size: 48),
+      ),
+    );
+  }
+
   Widget _buildPdfView() {
+    if (widget.isTeacher && _localSharedFile != null && !kIsWeb) {
+      final path = _localSharedFile!.path;
+      if (path != null) {
+        return PDFView(
+          filePath: path,
+          enableSwipe: !_isDrawingMode,
+          swipeHorizontal: true,
+          autoSpacing: false,
+          pageFling: false,
+          defaultPage: _sharedDocPage - 1,
+          onViewCreated: (controller) {
+            _pdfController = controller;
+            controller.setPage(_sharedDocPage - 1);
+          },
+          onPageChanged: (page, total) {
+            if (widget.isTeacher && page != null) {
+              final newPage = page + 1;
+              if (newPage != _sharedDocPage) {
+                _webrtcRef.child('shared_document').update({
+                  'current_page': newPage,
+                });
+              }
+            }
+          },
+        );
+      }
+    }
+
     if (kIsWeb) {
       return Center(
         child: Column(
