@@ -8,6 +8,9 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter_pdfview/flutter_pdfview.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -111,6 +114,26 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
 
   List<Map<String, dynamic>> _participants = <Map<String, dynamic>>[];
 
+  // Shared Document & Whiteboard State
+  StreamSubscription<DatabaseEvent>? _drawingStrokesSub;
+  StreamSubscription<DatabaseEvent>? _currentStrokeSub;
+  StreamSubscription<DatabaseEvent>? _sharedDocumentSub;
+
+  List<DrawingStroke> _completedStrokes = [];
+  DrawingStroke? _currentStroke;
+
+  String? _sharedDocUrl;
+  String? _sharedDocType;
+  int _sharedDocPage = 1;
+  String? _localPdfPath;
+  bool _isDownloadingPdf = false;
+  bool _isDrawingMode = false;
+  Color _selectedDrawColor = Colors.red;
+  double _selectedDrawWidth = 4.0;
+  PDFViewController? _pdfController;
+  int _lastSyncTime = 0;
+  List<Offset> _activePoints = [];
+
   DatabaseReference get _liveClassRef => FirebaseDatabase.instance
       .ref()
       .child('live_classes')
@@ -124,15 +147,41 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
 
   String get _remoteRole => widget.isTeacher ? 'student' : 'teacher';
 
-  String get _localSignalRole => widget.isTeacher ? 'teacher' : 'student';
-
-  String get _remoteSignalRole => widget.isTeacher ? 'student' : 'teacher';
-
   String get _sessionKey =>
       '$_localRole:${widget.classId}:$_localParticipantId';
 
-  DatabaseReference _peerSignalRef(String peerId) =>
-      _webrtcRef.child('peers').child(peerId);
+  DatabaseReference _sessionSignalRef(String peerId) {
+    if (widget.isTeacher) {
+      return _webrtcRef.child('peers').child(peerId);
+    }
+    if (peerId == _localParticipantId) {
+      return _webrtcRef.child('peers').child(_localParticipantId);
+    }
+    final sorted = [_localParticipantId, peerId]..sort();
+    return _webrtcRef.child('peers').child('${sorted[0]}_${sorted[1]}');
+  }
+
+  String _sessionLocalSignalRole(String peerId) {
+    if (widget.isTeacher) {
+      return 'teacher';
+    }
+    if (peerId == _localParticipantId) {
+      return 'student';
+    }
+    final isOfferer = _localParticipantId.compareTo(peerId) < 0;
+    return isOfferer ? 'offerer' : 'answerer';
+  }
+
+  String _sessionRemoteSignalRole(String peerId) {
+    if (widget.isTeacher) {
+      return 'student';
+    }
+    if (peerId == _localParticipantId) {
+      return 'teacher';
+    }
+    final isOfferer = _localParticipantId.compareTo(peerId) < 0;
+    return isOfferer ? 'answerer' : 'offerer';
+  }
 
   Map<String, dynamic> get _rtcConfiguration => <String, dynamic>{
     'iceServers': <Map<String, dynamic>>[
@@ -277,6 +326,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       if (!widget.isTeacher) {
         _listenForClassStatus();
       }
+      _listenForSharedWhiteboard();
 
       if (widget.isTeacher) {
         await _markTeacherClassLive();
@@ -347,6 +397,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
               !_isVideoOff) {
             unawaited(_startRecording());
           }
+        } else {
+          unawaited(_syncStudentStudentPeers(participants));
         }
       },
       onError: (Object error, StackTrace stackTrace) {
@@ -437,9 +489,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       }
 
       try {
-        await _peerSignalRef(peerId)
+        await _sessionSignalRef(peerId)
             .child('candidates')
-            .child(_localSignalRole)
+            .child(_sessionLocalSignalRole(peerId))
             .push()
             .set(<String, dynamic>{
               'candidate': candidateValue,
@@ -547,7 +599,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     try {
       final session = await _createPeerSession(studentId);
       _listenToRemoteCandidates(session);
-      session.answerSub = _peerSignalRef(studentId)
+      session.answerSub = _sessionSignalRef(studentId)
           .child('answer')
           .onValue
           .listen(
@@ -576,7 +628,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     try {
       final session = await _createPeerSession(_localParticipantId);
       _listenToRemoteCandidates(session);
-      session.offerSub = _peerSignalRef(_localParticipantId)
+      session.offerSub = _sessionSignalRef(_localParticipantId)
           .child('offer')
           .onValue
           .listen(
@@ -591,14 +643,87 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     }
   }
 
+  Future<void> _syncStudentStudentPeers(
+    List<Map<String, dynamic>> participants,
+  ) async {
+    if (widget.isTeacher ||
+        _hasEndedCall ||
+        _isCleaningUp ||
+        _localStream == null) {
+      return;
+    }
+
+    final otherStudentIds = participants
+        .where((participant) =>
+            participant['role'] == 'student' &&
+            participant['id']?.toString() != _localParticipantId)
+        .map((participant) => participant['id']?.toString() ?? '')
+        .where((id) => id.isNotEmpty)
+        .toSet();
+
+    for (final peerId in List<String>.from(_peerSessions.keys)) {
+      if (peerId != _localParticipantId && !otherStudentIds.contains(peerId)) {
+        await _closePeerSession(peerId, removeSignals: true);
+      }
+    }
+
+    for (final studentId in otherStudentIds) {
+      if (_peerSessions.containsKey(studentId) ||
+          _teacherPeerStartInProgress.contains(studentId)) {
+        continue;
+      }
+
+      await _startStudentStudentPeer(studentId);
+    }
+  }
+
+  Future<void> _startStudentStudentPeer(String studentId) async {
+    _teacherPeerStartInProgress.add(studentId);
+
+    try {
+      final session = await _createPeerSession(studentId);
+      _listenToRemoteCandidates(session);
+
+      final isOfferer = _localParticipantId.compareTo(studentId) < 0;
+      if (isOfferer) {
+        session.answerSub = _sessionSignalRef(studentId)
+            .child('answer')
+            .onValue
+            .listen(
+              (event) => unawaited(_handleAnswerUpdated(studentId, event)),
+              onError: (Object error, StackTrace stackTrace) {
+                _reportNonFatalError('student answer listener', error, stackTrace);
+              },
+            );
+
+        await _createAndSendOffer(studentId);
+      } else {
+        session.offerSub = _sessionSignalRef(studentId)
+            .child('offer')
+            .onValue
+            .listen(
+              (event) => unawaited(_handleOfferUpdated(studentId, event)),
+              onError: (Object error, StackTrace stackTrace) {
+                _reportNonFatalError('student offer listener', error, stackTrace);
+              },
+            );
+      }
+    } catch (error, stackTrace) {
+      _reportNonFatalError('start student student peer', error, stackTrace);
+      await _closePeerSession(studentId, removeSignals: true);
+    } finally {
+      _teacherPeerStartInProgress.remove(studentId);
+    }
+  }
+
   void _listenToRemoteCandidates(_PeerSession session) {
     if (session.remoteCandidatesSub != null) {
       return;
     }
 
-    session.remoteCandidatesSub = _peerSignalRef(session.peerId)
+    session.remoteCandidatesSub = _sessionSignalRef(session.peerId)
         .child('candidates')
-        .child(_remoteSignalRole)
+        .child(_sessionRemoteSignalRole(session.peerId))
         .onChildAdded
         .listen(
           (event) =>
@@ -865,7 +990,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       final answer = await peerConnection.createAnswer(_sdpConstraints);
       await peerConnection.setLocalDescription(answer);
 
-      await _peerSignalRef(peerId).child('answer').set(<String, dynamic>{
+      await _sessionSignalRef(peerId).child('answer').set(<String, dynamic>{
         'type': answer.type,
         'sdp': answer.sdp,
         'created_at': ServerValue.timestamp,
@@ -893,7 +1018,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     final offer = await peerConnection.createOffer(_sdpConstraints);
     await peerConnection.setLocalDescription(offer);
 
-    await _peerSignalRef(peerId).child('offer').set(<String, dynamic>{
+    await _sessionSignalRef(peerId).child('offer').set(<String, dynamic>{
       'type': offer.type,
       'sdp': offer.sdp,
       'created_at': ServerValue.timestamp,
@@ -1843,7 +1968,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
 
     if (removeSignals) {
       try {
-        await _peerSignalRef(peerId).remove();
+        await _sessionSignalRef(peerId).remove();
       } catch (error, stackTrace) {
         _reportNonFatalError('remove peer signaling', error, stackTrace);
       }
@@ -1897,7 +2022,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         } else {
           await _participantsRef.child(_localParticipantId).remove();
           if (!widget.isTeacher) {
-            await _peerSignalRef(_localParticipantId).remove();
+            await _sessionSignalRef(_localParticipantId).remove();
             await _webrtcRef.child('status').set('waiting_for_students');
           }
         }
@@ -1933,7 +2058,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       await Future<void>.delayed(const Duration(milliseconds: 200));
 
       // 5. Close peer connections (tracks already stopped, safe now)
-      await _closeAllPeerSessions(removeSignals: false);
+      await _closeAllPeerSessions(removeSignals: !widget.isTeacher);
 
       // 6. Dispose renderers (sources already null, safe to dispose)
       if (_renderersInitialized) {
@@ -2107,6 +2232,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     _recordingTimer?.cancel();
     _recordingTimer = null;
     unawaited(_disableScreenAwake());
+    _drawingStrokesSub?.cancel();
+    _currentStrokeSub?.cancel();
+    _sharedDocumentSub?.cancel();
     if (!_hasEndedCall) {
       unawaited(_cleanupRoomState(removeLiveClass: widget.isTeacher));
     }
@@ -2402,6 +2530,27 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                         enabled: _canSaveRecording,
                         onTap: _saveRecordingNow,
                       ),
+                    if (widget.isTeacher)
+                      _buildControlButton(
+                        tooltip: _sharedDocUrl != null
+                            ? 'Stop sharing'
+                            : 'Share Document',
+                        icon: _sharedDocUrl != null
+                            ? Icons.cancel_presentation_rounded
+                            : Icons.present_to_all_rounded,
+                        color: _sharedDocUrl != null
+                            ? Colors.redAccent
+                            : Colors.white.withValues(alpha: 0.2),
+                        iconColor: Colors.white,
+                        enabled: !_isProcessing,
+                        onTap: () async {
+                          if (_sharedDocUrl != null) {
+                            await _stopSharingDocument();
+                          } else {
+                            await _shareDocumentPicker();
+                          }
+                        },
+                      ),
                   ],
                 ),
               ),
@@ -2451,8 +2600,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   }
 
   Widget _buildMainVideoPanel() {
-    final showLocalInMain = !_showOwnCameraSmall;
-
     if (_isInitializing) {
       return const Center(
         child: CircularProgressIndicator(color: Colors.white),
@@ -2463,6 +2610,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       return _buildRemotePlaceholder();
     }
 
+    if (_sharedDocUrl != null) {
+      return _buildSharedWhiteboardPanel();
+    }
+
+    final showLocalInMain = !_showOwnCameraSmall;
     if (showLocalInMain) {
       return _buildLocalVideoView(expanded: true);
     }
@@ -2474,8 +2626,651 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     return _buildRemotePlaceholder();
   }
 
+  void _listenForSharedWhiteboard() {
+    _sharedDocumentSub = _webrtcRef.child('shared_document').onValue.listen((event) {
+      if (!mounted) return;
+      final val = event.snapshot.value;
+      if (val is Map) {
+        final doc = Map<String, dynamic>.from(val);
+        final newUrl = doc['url']?.toString();
+        final newType = doc['file_type']?.toString();
+        final newPage = doc['current_page'] as int? ?? 1;
+
+        if (newUrl != _sharedDocUrl) {
+          setState(() {
+            _sharedDocUrl = newUrl;
+            _sharedDocType = newType;
+            _sharedDocPage = newPage;
+            _localPdfPath = null;
+          });
+          if (newUrl != null && newType == 'pdf' && !kIsWeb) {
+            unawaited(_downloadPdf(newUrl));
+          }
+        } else {
+          setState(() {
+            _sharedDocPage = newPage;
+          });
+          if (_sharedDocType == 'pdf' && _pdfController != null) {
+            _pdfController!.setPage(newPage - 1);
+          }
+        }
+      } else {
+        setState(() {
+          _sharedDocUrl = null;
+          _sharedDocType = null;
+          _sharedDocPage = 1;
+          _localPdfPath = null;
+        });
+      }
+    });
+
+    _drawingStrokesSub = _webrtcRef.child('drawing_strokes').onValue.listen((event) {
+      if (!mounted) return;
+      final val = event.snapshot.value;
+      final List<DrawingStroke> strokes = [];
+      if (val is Map) {
+        for (final entry in val.entries) {
+          if (entry.value is Map) {
+            strokes.add(DrawingStroke.fromJson(entry.value as Map));
+          }
+        }
+      }
+      setState(() {
+        _completedStrokes = strokes;
+      });
+    });
+
+    _currentStrokeSub = _webrtcRef.child('current_stroke').onValue.listen((event) {
+      if (!mounted) return;
+      final val = event.snapshot.value;
+      if (val is Map) {
+        setState(() {
+          _currentStroke = DrawingStroke.fromJson(val);
+        });
+      } else {
+        setState(() {
+          _currentStroke = null;
+        });
+      }
+    });
+  }
+
+  Future<void> _downloadPdf(String url) async {
+    if (_isDownloadingPdf) return;
+    setState(() {
+      _isDownloadingPdf = true;
+    });
+
+    try {
+      final client = HttpClient();
+      final request = await client.getUrl(Uri.parse(url));
+      final response = await request.close();
+      final bytes = await consolidateHttpClientResponseBytes(response);
+      
+      final tempDir = await getTemporaryDirectory();
+      final tempFile = File('${tempDir.path}/shared_class_doc_${widget.classId}.pdf');
+      await tempFile.writeAsBytes(bytes);
+
+      if (mounted) {
+        setState(() {
+          _localPdfPath = tempFile.path;
+          _isDownloadingPdf = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error downloading PDF: $e');
+      if (mounted) {
+        setState(() {
+          _isDownloadingPdf = false;
+        });
+      }
+    }
+  }
+
+  void _onDrawingStart(Offset point) {
+    _activePoints = [point];
+    _currentStroke = DrawingStroke(
+      points: _activePoints,
+      color: _selectedDrawColor,
+      strokeWidth: _selectedDrawWidth,
+    );
+    setState(() {});
+    unawaited(_webrtcRef.child('current_stroke').set(_currentStroke!.toJson()));
+  }
+
+  void _onDrawingUpdate(Offset point) {
+    _activePoints.add(point);
+    _currentStroke = DrawingStroke(
+      points: _activePoints,
+      color: _selectedDrawColor,
+      strokeWidth: _selectedDrawWidth,
+    );
+    setState(() {});
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastSyncTime > 100) {
+      _lastSyncTime = now;
+      unawaited(_webrtcRef.child('current_stroke').set(_currentStroke!.toJson()));
+    }
+  }
+
+  void _onDrawingEnd() {
+    if (_currentStroke != null && _currentStroke!.points.isNotEmpty) {
+      final finishedStroke = _currentStroke!;
+      _completedStrokes.add(finishedStroke);
+      _currentStroke = null;
+      _activePoints = [];
+      setState(() {});
+
+      unawaited(_webrtcRef.child('drawing_strokes').push().set(finishedStroke.toJson()));
+      unawaited(_webrtcRef.child('current_stroke').remove());
+    }
+  }
+
+  Future<void> _clearDrawings() async {
+    setState(() {
+      _completedStrokes.clear();
+      _currentStroke = null;
+    });
+    await _webrtcRef.child('drawing_strokes').remove();
+    await _webrtcRef.child('current_stroke').remove();
+  }
+
+  Future<void> _shareDocumentPicker() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['jpg', 'jpeg', 'png', 'pdf'],
+      );
+
+      if (result == null || result.files.isEmpty) {
+        return;
+      }
+
+      final file = result.files.first;
+      final fileExtension = file.extension?.toLowerCase() ?? '';
+      final isPdf = fileExtension == 'pdf';
+      final fileType = isPdf ? 'pdf' : 'image';
+
+      setState(() {
+        _isProcessing = true;
+        _statusMessage = 'Uploading shared document...';
+      });
+
+      final authUid = await FirebaseUploadAuthService.ensureSignedIn();
+      if (authUid == null) {
+        throw Exception('Firebase authentication failed.');
+      }
+
+      final docKey = 'shared_doc_${DateTime.now().millisecondsSinceEpoch}';
+      final ref = FirebaseStorage.instance
+          .ref()
+          .child('live_classes')
+          .child(widget.classId)
+          .child('shared_docs')
+          .child('$docKey.$fileExtension');
+
+      if (kIsWeb) {
+        final bytes = file.bytes;
+        if (bytes == null) {
+          throw Exception('Could not read file bytes.');
+        }
+        final mimeType = isPdf
+            ? 'application/pdf'
+            : (fileExtension == 'png' ? 'image/png' : 'image/jpeg');
+        await ref.putData(
+          bytes,
+          SettableMetadata(contentType: mimeType),
+        );
+      } else {
+        final localFile = File(file.path!);
+        await ref.putFile(localFile);
+      }
+
+      final downloadUrl = await ref.getDownloadURL();
+
+      await _webrtcRef.child('drawing_strokes').remove();
+      await _webrtcRef.child('current_stroke').remove();
+
+      await _webrtcRef.child('shared_document').set({
+        'url': downloadUrl,
+        'file_name': file.name,
+        'file_type': fileType,
+        'current_page': 1,
+      });
+
+      setState(() {
+        _isProcessing = false;
+      });
+    } catch (e) {
+      setState(() {
+        _isProcessing = false;
+      });
+      _showSnackBar('Error sharing document: $e');
+    }
+  }
+
+  Future<void> _stopSharingDocument() async {
+    setState(() {
+      _isProcessing = true;
+    });
+    try {
+      await _clearDrawings();
+      await _webrtcRef.child('shared_document').remove();
+    } catch (e) {
+      debugPrint('Error stopping share: $e');
+    } finally {
+      setState(() {
+        _isProcessing = false;
+      });
+    }
+  }
+
+  Widget _buildSharedWhiteboardPanel() {
+    final isImage = _sharedDocType == 'image';
+    final isPdf = _sharedDocType == 'pdf';
+
+    return Column(
+      children: [
+        _buildParticipantVideoStrip(),
+        Expanded(
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: Container(
+                  color: Colors.white,
+                  child: isImage
+                      ? Image.network(
+                          _sharedDocUrl!,
+                          fit: BoxFit.contain,
+                          loadingBuilder: (context, child, loadingProgress) {
+                            if (loadingProgress == null) return child;
+                            return const Center(child: CircularProgressIndicator());
+                          },
+                          errorBuilder: (context, error, stackTrace) => const Center(
+                            child: Icon(Icons.broken_image, color: Colors.grey, size: 48),
+                          ),
+                        )
+                      : (isPdf ? _buildPdfView() : const SizedBox.shrink()),
+                ),
+              ),
+              Positioned.fill(
+                child: widget.isTeacher
+                    ? GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onPanStart: _isDrawingMode
+                            ? (details) {
+                                final box = context.findRenderObject() as RenderBox;
+                                final localPos = box.globalToLocal(details.globalPosition);
+                                final normX = localPos.dx / box.size.width;
+                                final normY = localPos.dy / box.size.height;
+                                _onDrawingStart(Offset(normX, normY));
+                              }
+                            : null,
+                        onPanUpdate: _isDrawingMode
+                            ? (details) {
+                                final box = context.findRenderObject() as RenderBox;
+                                final localPos = box.globalToLocal(details.globalPosition);
+                                final normX = (localPos.dx / box.size.width).clamp(0.0, 1.0);
+                                final normY = (localPos.dy / box.size.height).clamp(0.0, 1.0);
+                                _onDrawingUpdate(Offset(normX, normY));
+                              }
+                            : null,
+                        onPanEnd: _isDrawingMode
+                            ? (details) {
+                                _onDrawingEnd();
+                              }
+                            : null,
+                        child: CustomPaint(
+                          painter: DrawingPainter(
+                            completedStrokes: _completedStrokes,
+                            currentStroke: _currentStroke,
+                          ),
+                          size: Size.infinite,
+                        ),
+                      )
+                    : IgnorePointer(
+                        child: CustomPaint(
+                          painter: DrawingPainter(
+                            completedStrokes: _completedStrokes,
+                            currentStroke: _currentStroke,
+                          ),
+                          size: Size.infinite,
+                        ),
+                      ),
+              ),
+              if (isPdf && _isDownloadingPdf)
+                Positioned.fill(
+                  child: Container(
+                    color: Colors.black54,
+                    child: const Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircularProgressIndicator(color: Colors.white),
+                          SizedBox(height: 16),
+                          Text(
+                            'Downloading PDF...',
+                            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              _buildWhiteboardToolbar(),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPdfView() {
+    if (kIsWeb) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.picture_as_pdf, size: 64, color: Colors.redAccent),
+            const SizedBox(height: 16),
+            const Text(
+              'PDF Presentation Shared',
+              style: TextStyle(color: Colors.black87, fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Page $_sharedDocPage',
+              style: const TextStyle(color: Colors.black54, fontSize: 14),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primaryNavy,
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () => launchUrl(Uri.parse(_sharedDocUrl!)),
+              icon: const Icon(Icons.open_in_new),
+              label: const Text('Open PDF in New Tab'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_localPdfPath == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    return PDFView(
+      filePath: _localPdfPath,
+      enableSwipe: !_isDrawingMode,
+      swipeHorizontal: true,
+      autoSpacing: false,
+      pageFling: false,
+      defaultPage: _sharedDocPage - 1,
+      onViewCreated: (controller) {
+        _pdfController = controller;
+        controller.setPage(_sharedDocPage - 1);
+      },
+      onPageChanged: (page, total) {
+        if (widget.isTeacher && page != null) {
+          final newPage = page + 1;
+          if (newPage != _sharedDocPage) {
+            _webrtcRef.child('shared_document').update({
+              'current_page': newPage,
+            });
+          }
+        }
+      },
+    );
+  }
+
+  Widget _buildWhiteboardToolbar() {
+    return Positioned(
+      bottom: 120,
+      left: 20,
+      right: 20,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (widget.isTeacher && _isDrawingMode)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              margin: const EdgeInsets.only(bottom: 8),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.85),
+                borderRadius: BorderRadius.circular(24),
+                boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 10)],
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      _buildColorButton(Colors.red),
+                      const SizedBox(width: 8),
+                      _buildColorButton(Colors.blue),
+                      const SizedBox(width: 8),
+                      _buildColorButton(Colors.green),
+                      const SizedBox(width: 8),
+                      _buildColorButton(Colors.yellow),
+                      const SizedBox(width: 8),
+                      _buildColorButton(Colors.black),
+                    ],
+                  ),
+                  Row(
+                    children: [
+                      const Icon(Icons.brush, color: Colors.white70, size: 14),
+                      const SizedBox(width: 8),
+                      DropdownButton<double>(
+                        dropdownColor: Colors.black87,
+                        value: _selectedDrawWidth,
+                        underline: const SizedBox.shrink(),
+                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                        items: [2.0, 4.0, 6.0, 8.0, 10.0].map((width) {
+                          return DropdownMenuItem<double>(
+                            value: width,
+                            child: Text('${width.toInt()}px'),
+                          );
+                        }).toList(),
+                        onChanged: (val) {
+                          if (val != null) {
+                            setState(() {
+                              _selectedDrawWidth = val;
+                            });
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.8),
+              borderRadius: BorderRadius.circular(30),
+              boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 10)],
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                if (widget.isTeacher)
+                  Row(
+                    children: [
+                      IconButton(
+                        icon: Icon(
+                          _isDrawingMode ? Icons.edit_off_rounded : Icons.edit_rounded,
+                          color: _isDrawingMode ? Colors.redAccent : Colors.white,
+                        ),
+                        tooltip: 'Pencil Mode',
+                        onPressed: () {
+                          setState(() {
+                            _isDrawingMode = !_isDrawingMode;
+                          });
+                        },
+                      ),
+                      if (_isDrawingMode)
+                        IconButton(
+                          icon: const Icon(Icons.delete_sweep_rounded, color: Colors.white),
+                          tooltip: 'Clear drawings',
+                          onPressed: _clearDrawings,
+                        ),
+                    ],
+                  )
+                else
+                  Row(
+                    children: [
+                      Icon(
+                        _isDrawingMode ? Icons.edit_rounded : Icons.visibility_rounded,
+                        color: Colors.white70,
+                        size: 18,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _isDrawingMode ? 'Teacher drawing...' : 'Viewing Presentation',
+                        style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                if (_sharedDocType == 'pdf')
+                  Row(
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.arrow_back_ios_rounded, color: Colors.white),
+                        onPressed: _sharedDocPage > 1
+                            ? () {
+                                final newPage = _sharedDocPage - 1;
+                                _webrtcRef.child('shared_document').update({
+                                  'current_page': newPage,
+                                });
+                              }
+                            : null,
+                      ),
+                      Text(
+                        'Page $_sharedDocPage',
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white),
+                        onPressed: () {
+                          final newPage = _sharedDocPage + 1;
+                          _webrtcRef.child('shared_document').update({
+                            'current_page': newPage,
+                          });
+                        },
+                      ),
+                    ],
+                  )
+                else
+                  const SizedBox.shrink(),
+                if (widget.isTeacher)
+                  TextButton.icon(
+                    onPressed: _stopSharingDocument,
+                    icon: const Icon(Icons.stop_rounded, color: Colors.redAccent, size: 18),
+                    label: const Text('Stop', style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+                  )
+                else
+                  const SizedBox.shrink(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildColorButton(Color color) {
+    final isSelected = _selectedDrawColor == color;
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _selectedDrawColor = color;
+        });
+      },
+      child: Container(
+        width: 24,
+        height: 24,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: isSelected ? Colors.white : Colors.transparent,
+            width: 2,
+          ),
+          boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 2)],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildParticipantVideoStrip() {
+    final List<Widget> items = [];
+
+    if (_localRenderer.srcObject != null) {
+      items.add(_buildVideoStripItem('You', _localRenderer, mirror: _isFrontCamera));
+    }
+
+    for (final entry in _connectedRemoteRenderers) {
+      items.add(_buildVideoStripItem(_remoteParticipantName(entry.key), entry.value));
+    }
+
+    if (items.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      height: 100,
+      color: Colors.black87,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        itemCount: items.length,
+        separatorBuilder: (context, index) => const SizedBox(width: 8),
+        itemBuilder: (context, index) => items[index],
+      ),
+    );
+  }
+
+  Widget _buildVideoStripItem(String name, RTCVideoRenderer renderer, {bool mirror = false}) {
+    return Container(
+      width: 140,
+      decoration: BoxDecoration(
+        color: const Color(0xFF2C2C2E),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            RTCVideoView(renderer, mirror: mirror),
+            Positioned(
+              left: 6,
+              bottom: 6,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  name,
+                  style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w500),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget? _buildPipContent() {
-    if (_isInitializing || !_renderersInitialized) {
+    if (_isInitializing || !_renderersInitialized || _sharedDocUrl != null) {
       return null;
     }
 
@@ -2504,7 +3299,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       return _buildRemotePlaceholder();
     }
 
-    if (!widget.isTeacher || connectedRenderers.length == 1) {
+    if (connectedRenderers.length == 1) {
       final focusedEntry = _focusedRemoteEntry ?? connectedRenderers.first;
       return RTCVideoView(focusedEntry.value);
     }
@@ -2601,6 +3396,18 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   }
 
   String _remoteParticipantName(String peerId) {
+    if (!widget.isTeacher && peerId == _localParticipantId) {
+      final teacher = _participants.firstWhere(
+        (p) => p['role'] == 'teacher',
+        orElse: () => <String, dynamic>{},
+      );
+      final name = teacher['name']?.toString();
+      if (name != null && name.isNotEmpty) {
+        return name;
+      }
+      return 'Teacher';
+    }
+
     for (final participant in _participants) {
       if (participant['id']?.toString() == peerId) {
         final name = participant['name']?.toString();
@@ -2772,5 +3579,102 @@ class _PeerSession {
     localVideoSender = null;
     pendingRemoteCandidates.clear();
     processedRemoteCandidateKeys.clear();
+  }
+}
+
+class DrawingStroke {
+  final List<Offset> points;
+  final Color color;
+  final double strokeWidth;
+
+  DrawingStroke({
+    required this.points,
+    required this.color,
+    required this.strokeWidth,
+  });
+
+  Map<String, dynamic> toJson() {
+    return {
+      'points': points.map((p) => {'x': p.dx, 'y': p.dy}).toList(),
+      'color': color.value,
+      'stroke_width': strokeWidth,
+    };
+  }
+
+  factory DrawingStroke.fromJson(Map<dynamic, dynamic> json) {
+    final ptsList = json['points'] as List? ?? [];
+    final points = ptsList.map((p) {
+      final map = p as Map;
+      return Offset(
+        (map['x'] as num).toDouble(),
+        (map['y'] as num).toDouble(),
+      );
+    }).toList();
+    return DrawingStroke(
+      points: points,
+      color: Color(json['color'] as int? ?? Colors.red.value),
+      strokeWidth: (json['stroke_width'] as num? ?? 3.0).toDouble(),
+    );
+  }
+}
+
+class DrawingPainter extends CustomPainter {
+  final List<DrawingStroke> completedStrokes;
+  final DrawingStroke? currentStroke;
+
+  DrawingPainter({
+    required this.completedStrokes,
+    this.currentStroke,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke;
+
+    for (final stroke in completedStrokes) {
+      if (stroke.points.isEmpty) continue;
+      paint.color = stroke.color;
+      paint.strokeWidth = stroke.strokeWidth;
+
+      final path = Path();
+      path.moveTo(
+        stroke.points.first.dx * size.width,
+        stroke.points.first.dy * size.height,
+      );
+      for (int i = 1; i < stroke.points.length; i++) {
+        path.lineTo(
+          stroke.points[i].dx * size.width,
+          stroke.points[i].dy * size.height,
+        );
+      }
+      canvas.drawPath(path, paint);
+    }
+
+    final current = currentStroke;
+    if (current != null && current.points.isNotEmpty) {
+      paint.color = current.color;
+      paint.strokeWidth = current.strokeWidth;
+
+      final path = Path();
+      path.moveTo(
+        current.points.first.dx * size.width,
+        current.points.first.dy * size.height,
+      );
+      for (int i = 1; i < current.points.length; i++) {
+        path.lineTo(
+          current.points[i].dx * size.width,
+          current.points[i].dy * size.height,
+        );
+      }
+      canvas.drawPath(path, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant DrawingPainter oldDelegate) {
+    return true;
   }
 }
