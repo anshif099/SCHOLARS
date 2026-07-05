@@ -2802,12 +2802,13 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         throw Exception('Firebase authentication failed.');
       }
 
+      final subjectKey = widget.subjectId ?? 'live_call_docs';
       final docKey = 'shared_doc_${DateTime.now().millisecondsSinceEpoch}';
       final ref = FirebaseStorage.instance
           .ref()
-          .child('live_classes')
+          .child('notes')
           .child(widget.classId)
-          .child('shared_docs')
+          .child(subjectKey)
           .child('$docKey.$fileExtension');
 
       if (kIsWeb) {
