@@ -134,6 +134,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   int _lastSyncTime = 0;
   List<Offset> _activePoints = [];
   PlatformFile? _localSharedFile;
+  bool _showWhiteboardToolbar = true;
 
   DatabaseReference get _liveClassRef => FirebaseDatabase.instance
       .ref()
@@ -2643,6 +2644,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
             _sharedDocType = newType;
             _sharedDocPage = newPage;
             _localPdfPath = null;
+            _showWhiteboardToolbar = true;
           });
           if (newUrl != null && newType == 'pdf' && !kIsWeb) {
             unawaited(_downloadPdf(newUrl));
@@ -3079,6 +3081,33 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   }
 
   Widget _buildWhiteboardToolbar() {
+    if (!_showWhiteboardToolbar) {
+      return Positioned(
+        bottom: 120,
+        right: 20,
+        child: Tooltip(
+          message: 'Show tools',
+          child: GestureDetector(
+            onTap: () => setState(() => _showWhiteboardToolbar = true),
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.85),
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white24),
+                boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 8)],
+              ),
+              child: Icon(
+                widget.isTeacher ? Icons.palette_rounded : Icons.visibility_rounded,
+                color: Colors.white,
+                size: 24,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
     return Positioned(
       bottom: 120,
       left: 20,
@@ -3170,6 +3199,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                           tooltip: 'Clear drawings',
                           onPressed: _clearDrawings,
                         ),
+                      IconButton(
+                        icon: const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.white70),
+                        tooltip: 'Hide tools',
+                        onPressed: () => setState(() => _showWhiteboardToolbar = false),
+                      ),
                     ],
                   )
                 else
@@ -3184,6 +3218,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                       Text(
                         _isDrawingMode ? 'Teacher drawing...' : 'Viewing Presentation',
                         style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.white70, size: 18),
+                        tooltip: 'Hide toolbar',
+                        onPressed: () => setState(() => _showWhiteboardToolbar = false),
                       ),
                     ],
                   ),
