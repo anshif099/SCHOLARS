@@ -2540,7 +2540,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                       iconColor: Colors.white,
                       onTap: _toggleVideo,
                     ),
-                    if (widget.isTeacher)
+                    if (widget.isTeacher && _sharedDocUrl == null)
                       _buildControlButton(
                         tooltip: _isSavingRecording
                             ? 'Saving recording'
@@ -2551,25 +2551,15 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                         enabled: _canSaveRecording,
                         onTap: _saveRecordingNow,
                       ),
-                    if (widget.isTeacher)
+                    if (widget.isTeacher && _sharedDocUrl == null)
                       _buildControlButton(
-                        tooltip: _sharedDocUrl != null
-                            ? 'Stop sharing'
-                            : 'Share Document',
-                        icon: _sharedDocUrl != null
-                            ? Icons.cancel_presentation_rounded
-                            : Icons.present_to_all_rounded,
-                        color: _sharedDocUrl != null
-                            ? Colors.redAccent
-                            : Colors.white.withValues(alpha: 0.2),
+                        tooltip: 'Share Document',
+                        icon: Icons.present_to_all_rounded,
+                        color: Colors.white.withValues(alpha: 0.2),
                         iconColor: Colors.white,
                         enabled: !_isProcessing,
                         onTap: () async {
-                          if (_sharedDocUrl != null) {
-                            await _stopSharingDocument();
-                          } else {
-                            await _shareDocumentPicker();
-                          }
+                          await _shareDocumentPicker();
                         },
                       ),
                   ],
@@ -3308,10 +3298,43 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                 else
                   const SizedBox.shrink(),
                 if (widget.isTeacher)
-                  TextButton.icon(
-                    onPressed: _stopSharingDocument,
-                    icon: const Icon(Icons.stop_rounded, color: Colors.redAccent, size: 18),
-                    label: const Text('Stop', style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_hasPendingRecording) ...[
+                        TextButton.icon(
+                          onPressed: _canSaveRecording ? _saveRecordingNow : null,
+                          icon: Icon(
+                            _isSavingRecording
+                                ? Icons.hourglass_empty_rounded
+                                : Icons.save_rounded,
+                            color: _canSaveRecording ? Colors.greenAccent : Colors.white38,
+                            size: 18,
+                          ),
+                          label: Text(
+                            _isSavingRecording ? 'Saving...' : 'Save Rec',
+                            style: TextStyle(
+                              color: _canSaveRecording ? Colors.greenAccent : Colors.white38,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      TextButton.icon(
+                        onPressed: _stopSharingDocument,
+                        icon: const Icon(Icons.stop_rounded, color: Colors.redAccent, size: 18),
+                        label: const Text(
+                          'Stop',
+                          style: TextStyle(
+                            color: Colors.redAccent,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
                   )
                 else
                   const SizedBox.shrink(),
