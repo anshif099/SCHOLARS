@@ -54,6 +54,10 @@
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
             android:value="live_class_calls" />
+        <!-- Disable Impeller to prevent startup crashes on budget/low-end chipsets (e.g. Unisoc/PowerVR on Samsung Galaxy A03 Core) -->
+        <meta-data
+            android:name="io.flutter.embedding.android.EnableImpeller"
+            android:value="false" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
