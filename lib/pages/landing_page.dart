@@ -44,6 +44,8 @@ class _LandingPageState extends State<LandingPage>
   // ── Hardcoded admin credentials ──
   static const String _adminEmail = 'admin@scholars.com';
   static const String _adminPassword = 'admin123';
+  static const String _reviewerEmail = 'reviewer@yourdomain.com';
+  static const String _reviewerPassword = 'Review@123';
 
   @override
   void initState() {
@@ -239,9 +241,13 @@ class _LandingPageState extends State<LandingPage>
         // Simulate delay like in AdminLoginPage
         await Future.delayed(const Duration(milliseconds: 800));
 
-        if (input.toLowerCase() == _adminEmail.toLowerCase() && password == _adminPassword) {
+        final isAdmin = input.toLowerCase() == _adminEmail.toLowerCase() && password == _adminPassword;
+        final isReviewer = input.toLowerCase() == _reviewerEmail.toLowerCase() && password == _reviewerPassword;
+
+        if (isAdmin || isReviewer) {
           final prefs = await SharedPreferences.getInstance();
           await prefs.setBool('admin_logged_in', true);
+          await prefs.setString('admin_email', input);
 
           if (!mounted) return;
           setState(() => _isLoading = false);

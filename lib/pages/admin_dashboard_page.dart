@@ -29,6 +29,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   Map<dynamic, dynamic>? _studentsMap;
   bool _isTeachersLoading = true;
   bool _isStudentsLoading = true;
+  String _adminEmail = 'admin@scholars.com';
   final TextEditingController _classSearchController = TextEditingController();
   final TextEditingController _studentSearchController = TextEditingController();
   bool _isClassSearchVisible = false;
@@ -73,6 +74,17 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   void initState() {
     super.initState();
     _loadOverviewStats();
+    _loadAdminEmail();
+  }
+
+  Future<void> _loadAdminEmail() async {
+    final prefs = await SharedPreferences.getInstance();
+    final email = prefs.getString('admin_email');
+    if (email != null && email.isNotEmpty) {
+      setState(() {
+        _adminEmail = email;
+      });
+    }
   }
 
   @override
@@ -318,6 +330,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
               // Clear persisted login state
               final prefs = await SharedPreferences.getInstance();
               await prefs.setBool('admin_logged_in', false);
+              await prefs.remove('admin_email');
 
               if (!ctx.mounted) return;
               Navigator.of(ctx).pop();
@@ -423,7 +436,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
             _profileDetailRow(
               icon: Icons.email_outlined,
               label: 'Email',
-              value: 'admin@scholars.com',
+              value: _adminEmail,
             ),
             const SizedBox(height: 12),
             _profileDetailRow(

@@ -25,6 +25,8 @@ class _AdminLoginPageState extends State<AdminLoginPage>
   // ── Hardcoded admin credentials ──
   static const String _adminEmail = 'admin@scholars.com';
   static const String _adminPassword = 'admin123';
+  static const String _reviewerEmail = 'reviewer@yourdomain.com';
+  static const String _reviewerPassword = 'Review@123';
 
   late AnimationController _animController;
   late Animation<double> _fadeAnim;
@@ -71,10 +73,14 @@ class _AdminLoginPageState extends State<AdminLoginPage>
     final email = _emailController.text.trim();
     final password = _passwordController.text.trim();
 
-    if (email == _adminEmail && password == _adminPassword) {
+    final isAdmin = email.toLowerCase() == _adminEmail.toLowerCase() && password == _adminPassword;
+    final isReviewer = email.toLowerCase() == _reviewerEmail.toLowerCase() && password == _reviewerPassword;
+
+    if (isAdmin || isReviewer) {
       // Persist login state
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('admin_logged_in', true);
+      await prefs.setString('admin_email', email);
 
       if (!mounted) return;
       // Navigate to dashboard, replacing the entire stack
