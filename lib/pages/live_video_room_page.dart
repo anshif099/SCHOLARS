@@ -100,6 +100,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   Future<bool>? _recordingSaveTask;
   DateTime? _callStartedAt;
   DateTime? _recordingStartTime;
+  final List<Map<String, dynamic>> _recordingPresentationEvents =
+      <Map<String, dynamic>>[];
+  String? _lastRecordedPresentationState;
   bool _isSpeakerOn = true;
   Timer? _recordingTimer;
   RTCPeerConnection? _loopbackConnectionA;
@@ -124,6 +127,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   DrawingStroke? _currentStroke;
 
   String? _sharedDocUrl;
+  String? _sharedDocName;
   String? _sharedDocType;
   int _sharedDocPage = 1;
   String? _localPdfPath;
@@ -1328,6 +1332,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       }
 
       _recordingStartTime = DateTime.now();
+      _recordingPresentationEvents.clear();
+      _lastRecordedPresentationState = null;
+      _recordPresentationEvent(force: true);
       _recordingTimer?.cancel();
       _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
         if (mounted) {
@@ -1435,6 +1442,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
           _localVideoPath = null;
         }
         _recordingStartTime = null;
+        _recordingPresentationEvents.clear();
+        _lastRecordedPresentationState = null;
         if (showResult) {
           _showSnackBar('Recording saved.');
         }
@@ -1706,6 +1715,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     int? fileSizeBytes;
     String uploadStatus = 'no_file';
     final recordedAt = DateTime.now().millisecondsSinceEpoch;
+    final presentationEvents = _recordingPresentationEvents
+        .map((event) => Map<String, dynamic>.from(event))
+        .toList(growable: false);
 
     final recordedRef = FirebaseDatabase.instance
         .ref()
@@ -1746,6 +1758,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         'max_frame_rate': _recordingMaxFrameRate,
         'live_bandwidth_kbps': _callVideoMaxBitrate ~/ 1000,
         'target_kb_per_minute': _recordingTargetKbPerMinute,
+        'has_shared_content': presentationEvents.isNotEmpty,
+        if (presentationEvents.isNotEmpty) ...<String, dynamic>{
+          'presentation_events': presentationEvents,
+          'presentation_version': 1,
+        },
         'upload_status': 'preparing',
       });
       debugPrint('Initial metadata saved to recorded_classes');
@@ -2644,12 +2661,14 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       if (val is Map) {
         final doc = Map<String, dynamic>.from(val);
         final newUrl = doc['url']?.toString();
+        final newName = doc['file_name']?.toString();
         final newType = doc['file_type']?.toString();
         final newPage = doc['current_page'] as int? ?? 1;
 
         if (newUrl != _sharedDocUrl) {
           setState(() {
             _sharedDocUrl = newUrl;
+            _sharedDocName = newName;
             _sharedDocType = newType;
             _sharedDocPage = newPage;
             _localPdfPath = null;
@@ -2666,20 +2685,27 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
           }
         } else {
           setState(() {
+            _sharedDocName = newName;
             _sharedDocPage = newPage;
           });
           if (_sharedDocType == 'pdf' && _pdfController != null) {
             _pdfController!.setPage(newPage - 1);
           }
         }
+        _recordPresentationEvent();
       } else {
+        final wasSharing = _sharedDocUrl != null;
         setState(() {
           _sharedDocUrl = null;
+          _sharedDocName = null;
           _sharedDocType = null;
           _sharedDocPage = 1;
           _localPdfPath = null;
           _localSharedFile = null;
         });
+        if (wasSharing) {
+          _recordPresentationEvent(hidden: true);
+        }
       }
     });
 
@@ -2712,6 +2738,47 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         });
       }
     });
+  }
+
+  void _recordPresentationEvent({bool hidden = false, bool force = false}) {
+    final recordingStart = _recordingStartTime;
+    if (!widget.isTeacher ||
+        recordingStart == null ||
+        (!force && !_isRecording)) {
+      return;
+    }
+
+    final hasDocument = !hidden && _sharedDocUrl != null;
+    if (!hasDocument && !hidden) {
+      return;
+    }
+
+    final action = hidden ? 'hide' : 'show';
+    final stateKey = hasDocument
+        ? '$action|$_sharedDocUrl|$_sharedDocType|$_sharedDocPage'
+        : action;
+    if (_lastRecordedPresentationState == stateKey) {
+      return;
+    }
+
+    final event = <String, dynamic>{
+      'offset_ms': max(
+        0,
+        DateTime.now().difference(recordingStart).inMilliseconds,
+      ),
+      'action': action,
+    };
+    if (hasDocument) {
+      event.addAll(<String, dynamic>{
+        'url': _sharedDocUrl,
+        'file_name': _sharedDocName ?? 'Shared note',
+        'file_type': _sharedDocType ?? 'image',
+        'page': _sharedDocPage,
+      });
+    }
+
+    _recordingPresentationEvents.add(event);
+    _lastRecordedPresentationState = stateKey;
   }
 
   Future<void> _downloadPdf(String url) async {
@@ -2890,6 +2957,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     try {
       await _clearDrawings();
       await _webrtcRef.child('shared_document').remove();
+      _recordPresentationEvent(hidden: true);
     } catch (e) {
       debugPrint('Error stopping share: $e');
     } finally {

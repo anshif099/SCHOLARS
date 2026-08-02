@@ -2675,6 +2675,10 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                                                     videoBase64: hasBase64 ? rc['video_base64'] : null,
                                                     mimeType: rc['mime_type']?.toString(),
                                                     title: rc['topic'] ?? 'Recorded Class',
+                                                    presentationEvents:
+                                                        VideoPlayerPage.parsePresentationEvents(
+                                                      rc['presentation_events'],
+                                                    ),
                                                   ),
                                                 ),
                                               );

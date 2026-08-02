@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -14,11 +16,13 @@ import 'package:webview_flutter/webview_flutter.dart';
 class WebmVideoPlayerPage extends StatefulWidget {
   final String videoUrl;
   final String title;
+  final List<Map<String, dynamic>> presentationEvents;
 
   const WebmVideoPlayerPage({
     super.key,
     required this.videoUrl,
     required this.title,
+    this.presentationEvents = const <Map<String, dynamic>>[],
   });
 
   @override
@@ -45,7 +49,10 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
   }
 
   void _initWebView() {
-    final htmlContent = _buildHtmlPlayer(widget.videoUrl);
+    final htmlContent = _buildHtmlPlayer(
+      widget.videoUrl,
+      widget.presentationEvents,
+    );
     final controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(Colors.black)
@@ -67,9 +74,13 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
     });
   }
 
-  String _buildHtmlPlayer(String videoUrl) {
+  String _buildHtmlPlayer(
+    String videoUrl,
+    List<Map<String, dynamic>> presentationEvents,
+  ) {
     // Escape double-quotes in URL to safely embed in HTML attribute
     final safeUrl = videoUrl.replaceAll('"', '&quot;');
+    final eventsJson = jsonEncode(presentationEvents).replaceAll('</', r'<\/');
     return '''
 <!DOCTYPE html>
 <html>
@@ -93,6 +104,38 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
       object-fit: contain;
       background: #000;
     }
+    #presentation {
+      display: none;
+      position: absolute;
+      z-index: 2;
+      inset: 0 0 58px 0;
+      background: #111318;
+      pointer-events: none;
+    }
+    #presentationHeader {
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 16px;
+      color: white;
+      background: rgba(18, 22, 30, 0.96);
+      font: 600 13px Arial, sans-serif;
+    }
+    #presentationName {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #presentationPage { color: rgba(255,255,255,.72); flex: none; }
+    #presentationImage, #presentationPdf {
+      width: 100%;
+      height: calc(100% - 44px);
+      border: 0;
+      object-fit: contain;
+      background: white;
+    }
   </style>
 </head>
 <body>
@@ -105,13 +148,66 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
     src="$safeUrl">
     Your browser does not support HTML5 video.
   </video>
+  <div id="presentation">
+    <div id="presentationHeader">
+      <span id="presentationName">Shared note</span>
+      <span id="presentationPage"></span>
+    </div>
+    <img id="presentationImage" alt="Shared class note">
+    <iframe id="presentationPdf"></iframe>
+  </div>
   <script>
     var v = document.getElementById('vid');
+    var events = $eventsJson;
+    var activeEventIndex = -2;
+    var presentation = document.getElementById('presentation');
+    var presentationName = document.getElementById('presentationName');
+    var presentationPage = document.getElementById('presentationPage');
+    var presentationImage = document.getElementById('presentationImage');
+    var presentationPdf = document.getElementById('presentationPdf');
+
+    function syncPresentation() {
+      var positionMs = Math.floor((v.currentTime || 0) * 1000);
+      var index = -1;
+      for (var i = 0; i < events.length; i++) {
+        if ((events[i].offset_ms || 0) > positionMs) break;
+        index = i;
+      }
+      if (index === activeEventIndex) return;
+      activeEventIndex = index;
+      var event = index >= 0 ? events[index] : null;
+      if (!event || event.action !== 'show') {
+        presentation.style.display = 'none';
+        presentationImage.removeAttribute('src');
+        presentationPdf.removeAttribute('src');
+        return;
+      }
+
+      presentation.style.display = 'block';
+      presentationName.textContent = event.file_name || 'Shared note';
+      var page = Math.max(1, Number(event.page || 1));
+      if (event.file_type === 'pdf') {
+        presentationPage.textContent = 'Page ' + page;
+        presentationImage.style.display = 'none';
+        presentationPdf.style.display = 'block';
+        presentationPdf.src = 'https://docs.google.com/gview?embedded=1&url=' +
+            encodeURIComponent(event.url);
+      } else {
+        presentationPage.textContent = '';
+        presentationPdf.style.display = 'none';
+        presentationImage.style.display = 'block';
+        presentationImage.src = event.url;
+      }
+    }
+
     v.addEventListener('loadedmetadata', function() {
+      syncPresentation();
       v.play().catch(function() {
         // Autoplay may be blocked — user can tap play manually
       });
     });
+    v.addEventListener('timeupdate', syncPresentation);
+    v.addEventListener('seeking', syncPresentation);
   </script>
 </body>
 </html>

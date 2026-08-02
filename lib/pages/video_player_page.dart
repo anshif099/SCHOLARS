@@ -1,14 +1,17 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:chewie/chewie.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_pdfview/flutter_pdfview.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart';
 import '../services/video_web_helper.dart';
 import '../theme/app_theme.dart';
+import '../components/universal_image.dart';
 import 'webm_video_player_page.dart';
 
 class VideoPlayerPage extends StatefulWidget {
@@ -24,13 +27,45 @@ class VideoPlayerPage extends StatefulWidget {
 
   final String title;
 
+  /// Timestamped PDF/image changes captured while the live class was recorded.
+  final List<Map<String, dynamic>> presentationEvents;
+
   const VideoPlayerPage({
     super.key,
     this.videoUrl,
     this.videoBase64,
     this.mimeType,
     required this.title,
+    this.presentationEvents = const <Map<String, dynamic>>[],
   });
+
+  static List<Map<String, dynamic>> parsePresentationEvents(dynamic raw) {
+    final values = raw is List
+        ? raw.where((value) => value != null)
+        : raw is Map
+        ? raw.values
+        : const <dynamic>[];
+    final events = <Map<String, dynamic>>[];
+
+    for (final value in values) {
+      if (value is! Map) continue;
+      final event = Map<String, dynamic>.from(value);
+      event['offset_ms'] = (event['offset_ms'] as num? ?? 0).toInt();
+      event['page'] = (event['page'] as num? ?? 1).toInt();
+      final action = event['action']?.toString();
+      if (action == 'hide' ||
+          (action == 'show' &&
+              event['url'] != null &&
+              event['url'].toString().isNotEmpty)) {
+        events.add(event);
+      }
+    }
+
+    events.sort(
+      (a, b) => (a['offset_ms'] as int).compareTo(b['offset_ms'] as int),
+    );
+    return events;
+  }
 
   @override
   State<VideoPlayerPage> createState() => _VideoPlayerPageState();
@@ -42,10 +77,25 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   bool _isLoading = true;
   String? _errorMessage;
   String? _tempFilePath;
+  late final List<Map<String, dynamic>> _presentationEvents;
+  int _activePresentationIndex = -1;
+  Map<String, dynamic>? _activePresentation;
+  PDFViewController? _presentationPdfController;
+  String? _presentationPdfUrl;
+  String? _presentationPdfPath;
+  bool _isLoadingPresentationPdf = false;
+  int _pdfDownloadGeneration = 0;
 
   @override
   void initState() {
     super.initState();
+    _presentationEvents = List<Map<String, dynamic>>.from(
+      widget.presentationEvents,
+    )..sort(
+        (a, b) => ((a['offset_ms'] as num?)?.toInt() ?? 0).compareTo(
+          (b['offset_ms'] as num?)?.toInt() ?? 0,
+        ),
+      );
     _initializePlayer();
   }
 
@@ -95,6 +145,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
             builder: (_) => WebmVideoPlayerPage(
               videoUrl: url,
               title: widget.title,
+              presentationEvents: _presentationEvents,
             ),
           ),
         );
@@ -211,16 +262,249 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
         );
       },
     );
+
+    _videoPlayerController!.addListener(_handlePlaybackProgress);
+    _handlePlaybackProgress();
+  }
+
+  void _handlePlaybackProgress() {
+    final controller = _videoPlayerController;
+    if (!mounted || controller == null || !controller.value.isInitialized) {
+      return;
+    }
+
+    final positionMs = controller.value.position.inMilliseconds;
+    var eventIndex = -1;
+    for (var index = 0; index < _presentationEvents.length; index++) {
+      final offset =
+          (_presentationEvents[index]['offset_ms'] as num?)?.toInt() ?? 0;
+      if (offset > positionMs) break;
+      eventIndex = index;
+    }
+
+    if (eventIndex == _activePresentationIndex) return;
+    final event = eventIndex >= 0 ? _presentationEvents[eventIndex] : null;
+    final activeEvent = event?['action'] == 'show' ? event : null;
+
+    setState(() {
+      _activePresentationIndex = eventIndex;
+      _activePresentation = activeEvent;
+    });
+
+    if (activeEvent?['file_type']?.toString() == 'pdf') {
+      unawaited(_preparePresentationPdf(activeEvent!));
+    }
+  }
+
+  Future<void> _preparePresentationPdf(Map<String, dynamic> event) async {
+    if (kIsWeb) return;
+
+    final url = event['url']?.toString();
+    if (url == null || url.isEmpty) return;
+    final page = ((event['page'] as num?)?.toInt() ?? 1).clamp(1, 1000000);
+
+    if (_presentationPdfUrl == url && _presentationPdfPath != null) {
+      await _presentationPdfController?.setPage(page - 1);
+      return;
+    }
+
+    final generation = ++_pdfDownloadGeneration;
+    if (mounted) {
+      setState(() => _isLoadingPresentationPdf = true);
+    }
+
+    HttpClient? client;
+    try {
+      client = HttpClient();
+      final request = await client.getUrl(Uri.parse(url));
+      final response = await request.close();
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw HttpException('PDF download failed (${response.statusCode})');
+      }
+      final bytes = await consolidateHttpClientResponseBytes(response);
+      final tempDir = await getTemporaryDirectory();
+      final file = File(
+        '${tempDir.path}/recorded_presentation_${DateTime.now().microsecondsSinceEpoch}.pdf',
+      );
+      await file.writeAsBytes(bytes, flush: true);
+
+      if (!mounted || generation != _pdfDownloadGeneration) {
+        try {
+          await file.delete();
+        } catch (_) {}
+        return;
+      }
+
+      final previousPath = _presentationPdfPath;
+      setState(() {
+        _presentationPdfUrl = url;
+        _presentationPdfPath = file.path;
+        _isLoadingPresentationPdf = false;
+      });
+      if (previousPath != null && previousPath != file.path) {
+        try {
+          await File(previousPath).delete();
+        } catch (_) {}
+      }
+    } catch (error) {
+      debugPrint('Recorded presentation PDF could not be loaded: $error');
+      if (mounted && generation == _pdfDownloadGeneration) {
+        setState(() => _isLoadingPresentationPdf = false);
+      }
+    } finally {
+      client?.close(force: true);
+    }
+  }
+
+  Widget _buildPlayer() {
+    final chewieController = _chewieController;
+    if (chewieController == null ||
+        !chewieController.videoPlayerController.value.isInitialized) {
+      return const CircularProgressIndicator(color: Colors.white);
+    }
+
+    if (_presentationEvents.isEmpty) {
+      return Chewie(controller: chewieController);
+    }
+
+    return SizedBox.expand(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Center(child: Chewie(controller: chewieController)),
+          if (_activePresentation != null)
+            Positioned.fill(
+              bottom: 72,
+              child: IgnorePointer(
+                child: _buildPresentation(_activePresentation!),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPresentation(Map<String, dynamic> event) {
+    final type = event['file_type']?.toString() ?? 'image';
+    final url = event['url']?.toString() ?? '';
+    final name = event['file_name']?.toString() ?? 'Shared note';
+    final page = ((event['page'] as num?)?.toInt() ?? 1).clamp(1, 1000000);
+
+    return ColoredBox(
+      color: const Color(0xFF111318),
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 48, 12, 12),
+              child: type == 'pdf'
+                  ? _buildRecordedPdf(url, page)
+                  : UniversalImage(
+                      imageUrl: url,
+                      fit: BoxFit.contain,
+                      errorBuilder: (context, error, stackTrace) =>
+                          _buildPresentationError('Shared image unavailable'),
+                    ),
+            ),
+          ),
+          Positioned(
+            left: 12,
+            right: 12,
+            top: 8,
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.present_to_all_rounded,
+                  color: Colors.white70,
+                  size: 18,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.poppins(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                if (type == 'pdf')
+                  Text(
+                    'Page $page',
+                    style: GoogleFonts.poppins(
+                      color: Colors.white70,
+                      fontSize: 12,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRecordedPdf(String url, int page) {
+    if (kIsWeb) {
+      return _buildPresentationError('PDF shared • Page $page');
+    }
+    if (_isLoadingPresentationPdf ||
+        _presentationPdfUrl != url ||
+        _presentationPdfPath == null) {
+      return const Center(
+        child: CircularProgressIndicator(color: Colors.white),
+      );
+    }
+
+    return PDFView(
+      key: ValueKey(_presentationPdfPath),
+      filePath: _presentationPdfPath,
+      defaultPage: page - 1,
+      enableSwipe: false,
+      swipeHorizontal: true,
+      autoSpacing: false,
+      pageFling: false,
+      onViewCreated: (controller) {
+        _presentationPdfController = controller;
+        controller.setPage(page - 1);
+      },
+    );
+  }
+
+  Widget _buildPresentationError(String message) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.description_rounded, color: Colors.white54, size: 56),
+          const SizedBox(height: 12),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: GoogleFonts.poppins(color: Colors.white70, fontSize: 14),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   void dispose() {
+    _videoPlayerController?.removeListener(_handlePlaybackProgress);
     _videoPlayerController?.dispose();
     _chewieController?.dispose();
     // Clean up temp file (only used for Base64 fallback)
     if (_tempFilePath != null) {
       try {
         File(_tempFilePath!).deleteSync();
+      } catch (_) {}
+    }
+    if (_presentationPdfPath != null) {
+      try {
+        File(_presentationPdfPath!).deleteSync();
       } catch (_) {}
     }
     super.dispose();
@@ -266,11 +550,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                       ],
                     ),
                   )
-                : (_chewieController != null &&
-                        _chewieController!
-                            .videoPlayerController.value.isInitialized)
-                    ? Chewie(controller: _chewieController!)
-                    : const CircularProgressIndicator(color: Colors.white),
+                : _buildPlayer(),
       ),
     );
   }
