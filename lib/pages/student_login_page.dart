@@ -8,6 +8,7 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/call_notification_service.dart';
+import '../services/device_session_service.dart';
 import '../theme/app_theme.dart';
 import 'student_dashboard_page.dart';
 
@@ -65,14 +66,33 @@ class _StudentLoginPageState extends State<StudentLoginPage>
       final studentData = await _findStudentByLoginId(loginId);
 
       if (studentData != null) {
+        final studentKey = studentData['key'].toString();
+        final activeSession =
+            await DeviceSessionService.getActiveDeviceSession(studentKey);
+        final localDeviceId = await DeviceSessionService.getDeviceId();
+
+        if (activeSession != null &&
+            activeSession['device_id'] != localDeviceId) {
+          if (!mounted) return;
+          final shouldForceLogin =
+              await _showActiveDeviceDialog(activeSession);
+          if (!shouldForceLogin) {
+            if (mounted) setState(() => _isLoading = false);
+            return;
+          }
+        }
+
+        // Register active device session in Firebase Database
+        await DeviceSessionService.registerDeviceSession(studentKey);
+
         final prefs = await SharedPreferences.getInstance();
         await prefs.setBool('is_student_logged_in', true);
         await prefs.setString(
           'student_data',
-          studentData['key'],
+          studentKey,
         ); // Storing reference key
         final notificationsReady = await _activateNotifications(
-          studentData['key'].toString(),
+          studentKey,
         ).timeout(const Duration(seconds: 20), onTimeout: () => false);
 
         if (!mounted) return;
@@ -109,6 +129,150 @@ class _StudentLoginPageState extends State<StudentLoginPage>
       _showError('Unable to login. Check internet and try again.');
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  Future<bool> _showActiveDeviceDialog(
+      Map<dynamic, dynamic> activeDevice) async {
+    final deviceName =
+        activeDevice['device_name']?.toString() ?? 'Other Device';
+    final platform =
+        activeDevice['platform']?.toString() ?? 'Unknown Platform';
+    final loginTime = activeDevice['login_time']?.toString() ?? 'Recently';
+
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: AppColors.accentRed.withValues(alpha: 0.1),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.devices_other_rounded,
+                color: AppColors.accentRed,
+                size: 24,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Account Logged In',
+                style: GoogleFonts.poppins(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.primaryNavy,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'This Student ID is currently logged in on another device:',
+              style: GoogleFonts.poppins(
+                fontSize: 14,
+                color: AppColors.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.background,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.divider),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.phonelink_rounded,
+                          size: 18, color: AppColors.primaryNavy),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '$deviceName ($platform)',
+                          style: GoogleFonts.poppins(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.primaryNavy,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      const Icon(Icons.access_time_rounded,
+                          size: 16, color: AppColors.textLight),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Logged in: $loginTime',
+                          style: GoogleFonts.poppins(
+                            fontSize: 13,
+                            color: AppColors.textLight,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Logging in here will automatically log out the active device. Do you wish to continue?',
+              style: GoogleFonts.poppins(
+                fontSize: 13,
+                color: AppColors.textSecondary,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(
+              'Cancel',
+              style: GoogleFonts.poppins(color: AppColors.textLight),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.accentRed,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            child: Text(
+              'Log Out Other Device',
+              style: GoogleFonts.poppins(
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    return result ?? false;
   }
 
   Future<Map<dynamic, dynamic>?> _findStudentByLoginId(String loginId) async {

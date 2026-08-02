@@ -17,6 +17,7 @@ import 'pages/student_dashboard_page.dart';
 import 'pages/teacher_dashboard_page.dart';
 import 'services/call_manager.dart';
 import 'services/call_notification_service.dart';
+import 'services/device_session_service.dart';
 import 'theme/app_theme.dart';
 
 @pragma('vm:entry-point')
@@ -179,26 +180,43 @@ class _AuthGateState extends State<_AuthGate> {
           if (snapshot.value != null) {
             final st = Map<dynamic, dynamic>.from(snapshot.value as Map);
             st['key'] = key;
-            await CallNotificationService.activateForStudent(key);
-            if (mounted) {
-              setState(() {
-                _homePage = StudentDashboardPage(studentData: st);
-                _isLoading = false;
-                _loginCheckDone = true;
-              });
-            }
-            if (kIsWeb) {
-              final classId = Uri.base.queryParameters['classId'];
-              final topic = Uri.base.queryParameters['topic'] ?? 'Live Class';
-              if (classId != null && classId.isNotEmpty) {
-                unawaited(_openIncomingClass(<String, dynamic>{
-                  'classId': classId,
-                  'topic': topic,
-                  'startedAt': DateTime.now().millisecondsSinceEpoch.toString(),
-                }));
+
+            final activeSession = st['active_device'] is Map
+                ? Map<dynamic, dynamic>.from(st['active_device'] as Map)
+                : null;
+            final localDeviceId = await DeviceSessionService.getDeviceId();
+
+            if (activeSession != null &&
+                activeSession['device_id'] != null &&
+                activeSession['device_id'].toString().isNotEmpty &&
+                activeSession['device_id'] != localDeviceId) {
+              // Session was taken over by another device while this app was closed
+              await prefs.remove('is_student_logged_in');
+              await prefs.remove('student_data');
+            } else {
+              // Refresh device session registration
+              await DeviceSessionService.registerDeviceSession(key);
+              await CallNotificationService.activateForStudent(key);
+              if (mounted) {
+                setState(() {
+                  _homePage = StudentDashboardPage(studentData: st);
+                  _isLoading = false;
+                  _loginCheckDone = true;
+                });
               }
+              if (kIsWeb) {
+                final classId = Uri.base.queryParameters['classId'];
+                final topic = Uri.base.queryParameters['topic'] ?? 'Live Class';
+                if (classId != null && classId.isNotEmpty) {
+                  unawaited(_openIncomingClass(<String, dynamic>{
+                    'classId': classId,
+                    'topic': topic,
+                    'startedAt': DateTime.now().millisecondsSinceEpoch.toString(),
+                  }));
+                }
+              }
+              return;
             }
-            return;
           }
         } catch (_) {}
       }

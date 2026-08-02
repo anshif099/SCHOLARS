@@ -40,6 +40,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   int _selectedIndex = 0;
   final Set<String> _myCommonClassIds = {};
   StreamSubscription<DatabaseEvent>? _teachersSub;
+  StreamSubscription<DatabaseEvent>? _sessionSub;
 
   bool _isStudentTargeted(Map<dynamic, dynamic> commonClass) {
     final targetType = commonClass['target_type']?.toString();
@@ -59,6 +60,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   @override
   void initState() {
     super.initState();
+    _listenToDeviceSession();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await PermissionService.requestAllPermissions();
       _ensureCallNotificationsReady(showResult: widget.showNotificationWarning);
@@ -91,9 +93,79 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
     });
   }
 
+  void _listenToDeviceSession() {
+    final studentKey = widget.studentData['key']?.toString();
+    if (studentKey == null || studentKey.isEmpty) return;
+
+    _sessionSub = DeviceSessionService.listenToActiveSession(
+      studentKey: studentKey,
+      onSessionRevoked: (newDeviceName) {
+        if (!mounted) return;
+        _handleRemoteLogout(newDeviceName);
+      },
+    );
+  }
+
+  Future<void> _handleRemoteLogout(String newDeviceName) async {
+    _sessionSub?.cancel();
+    await CallNotificationService.deactivateStudentSession();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('is_student_logged_in');
+    await prefs.remove('student_data');
+
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            const Icon(Icons.warning_amber_rounded,
+                color: AppColors.accentRed, size: 28),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Logged Out',
+                style: GoogleFonts.poppins(
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.primaryNavy,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          'Your account was logged in on another device ($newDeviceName). You have been logged out.',
+          style: GoogleFonts.poppins(color: AppColors.textSecondary),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              Navigator.of(context).pushAndRemoveUntil(
+                MaterialPageRoute(builder: (_) => const LandingPage()),
+                (route) => false,
+              );
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primaryNavy,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            child: Text('OK', style: GoogleFonts.poppins(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _teachersSub?.cancel();
+    _sessionSub?.cancel();
     super.dispose();
   }
 
@@ -234,6 +306,10 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
           ElevatedButton(
             onPressed: () async {
               Navigator.of(ctx).pop();
+              final studentKey = widget.studentData['key']?.toString();
+              if (studentKey != null) {
+                await DeviceSessionService.clearDeviceSession(studentKey);
+              }
               await CallNotificationService.deactivateStudentSession();
               final prefs = await SharedPreferences.getInstance();
               await prefs.remove('is_student_logged_in');
