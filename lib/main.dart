@@ -181,16 +181,18 @@ class _AuthGateState extends State<_AuthGate> {
             final st = Map<dynamic, dynamic>.from(snapshot.value as Map);
             st['key'] = key;
 
-            final activeSession = st['active_device'] is Map
-                ? Map<dynamic, dynamic>.from(st['active_device'] as Map)
-                : null;
+            final activeSession =
+                await DeviceSessionService.getActiveDeviceSession(key) ??
+                    (st['active_device'] is Map
+                        ? Map<dynamic, dynamic>.from(st['active_device'] as Map)
+                        : null);
             final localDeviceId = await DeviceSessionService.getDeviceId();
 
             if (activeSession != null &&
                 activeSession['device_id'] != null &&
                 activeSession['device_id'].toString().isNotEmpty &&
-                activeSession['device_id'] != localDeviceId) {
-              // Session was taken over by another device while this app was closed
+                activeSession['device_id'].toString() != localDeviceId) {
+              // Session belongs to another active device
               await prefs.remove('is_student_logged_in');
               await prefs.remove('student_data');
             } else {

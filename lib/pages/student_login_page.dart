@@ -68,14 +68,15 @@ class _StudentLoginPageState extends State<StudentLoginPage>
       if (studentData != null) {
         final studentKey = studentData['key'].toString();
 
-        Map<dynamic, dynamic>? activeSession;
-        if (studentData['active_device'] is Map &&
+        // Fetch fresh live active session directly from RTDB node
+        var activeSession =
+            await DeviceSessionService.getActiveDeviceSession(studentKey);
+
+        if (activeSession == null &&
+            studentData['active_device'] is Map &&
             (studentData['active_device'] as Map).isNotEmpty) {
           activeSession =
               Map<dynamic, dynamic>.from(studentData['active_device'] as Map);
-        } else {
-          activeSession =
-              await DeviceSessionService.getActiveDeviceSession(studentKey);
         }
 
         final localDeviceId = await DeviceSessionService.getDeviceId();
