@@ -4,12 +4,12 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../services/call_notification_service.dart';
+import '../services/student_session_service.dart';
 import '../theme/app_theme.dart';
 import 'landing_page.dart';
 import 'live_video_room_page.dart';
@@ -40,6 +40,9 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   int _selectedIndex = 0;
   final Set<String> _myCommonClassIds = {};
   StreamSubscription<DatabaseEvent>? _teachersSub;
+  StreamSubscription<bool>? _studentSessionSub;
+  Timer? _sessionHeartbeat;
+  bool _isEndingStudentSession = false;
 
   bool _isStudentTargeted(Map<dynamic, dynamic> commonClass) {
     final targetType = commonClass['target_type']?.toString();
@@ -59,6 +62,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   @override
   void initState() {
     super.initState();
+    _startStudentSessionGuard();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await PermissionService.requestAllPermissions();
       _ensureCallNotificationsReady(showResult: widget.showNotificationWarning);
@@ -94,7 +98,105 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   @override
   void dispose() {
     _teachersSub?.cancel();
+    _studentSessionSub?.cancel();
+    _sessionHeartbeat?.cancel();
     super.dispose();
+  }
+
+  void _startStudentSessionGuard() {
+    final studentKey = widget.studentData['key']?.toString().trim();
+    if (studentKey == null || studentKey.isEmpty) return;
+
+    _studentSessionSub?.cancel();
+    _studentSessionSub = StudentSessionService.watchCurrentSession(studentKey)
+        .listen(
+          (isValid) {
+            if (!isValid) {
+              unawaited(_handleStudentSessionEnded());
+            }
+          },
+          onError: (Object error) {
+            // A temporary network failure must not sign out the active device.
+            debugPrint('Student session monitor paused: $error');
+          },
+        );
+
+    _sessionHeartbeat?.cancel();
+    _sessionHeartbeat = Timer.periodic(const Duration(minutes: 1), (_) {
+      unawaited(
+        StudentSessionService.touch(studentKey)
+            .then((isValid) {
+              if (!isValid) {
+                return _handleStudentSessionEnded();
+              }
+            })
+            .catchError((Object error) {
+              debugPrint('Student session heartbeat skipped: $error');
+            }),
+      );
+    });
+  }
+
+  Future<void> _handleStudentSessionEnded() async {
+    if (_isEndingStudentSession || !mounted) return;
+    _isEndingStudentSession = true;
+    await _studentSessionSub?.cancel();
+    _studentSessionSub = null;
+    _sessionHeartbeat?.cancel();
+    _sessionHeartbeat = null;
+
+    await CallNotificationService.deactivateStudentSession();
+    await StudentSessionService.clearLocalSession();
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        icon: const Icon(
+          Icons.phonelink_erase_rounded,
+          color: AppColors.accentRed,
+          size: 42,
+        ),
+        title: Text(
+          'Session ended',
+          textAlign: TextAlign.center,
+          style: GoogleFonts.poppins(
+            fontWeight: FontWeight.w700,
+            color: AppColors.primaryNavy,
+          ),
+        ),
+        content: Text(
+          'Your student login is no longer active on this device. Please sign in again.',
+          textAlign: TextAlign.center,
+          style: GoogleFonts.poppins(color: AppColors.textSecondary),
+        ),
+        actions: [
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primaryNavy,
+                foregroundColor: Colors.white,
+              ),
+              child: Text(
+                'Go to Login',
+                style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (mounted) {
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const LandingPage()),
+        (route) => false,
+      );
+    }
   }
 
   Future<void> _ensureCallNotificationsReady({required bool showResult}) async {
@@ -234,16 +336,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
           ElevatedButton(
             onPressed: () async {
               Navigator.of(ctx).pop();
-              await CallNotificationService.deactivateStudentSession();
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.remove('is_student_logged_in');
-              await prefs.remove('student_data');
-              if (mounted) {
-                Navigator.of(context).pushAndRemoveUntil(
-                  MaterialPageRoute(builder: (_) => const LandingPage()),
-                  (route) => false,
-                );
-              }
+              await _logoutStudent();
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.accentRed,
@@ -262,6 +355,44 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
         ],
       ),
     );
+  }
+
+  Future<void> _logoutStudent() async {
+    if (_isEndingStudentSession) return;
+    _isEndingStudentSession = true;
+    await _studentSessionSub?.cancel();
+    _studentSessionSub = null;
+    _sessionHeartbeat?.cancel();
+    _sessionHeartbeat = null;
+
+    try {
+      // Release the server lock before removing the local login.
+      await StudentSessionService.releaseCurrentSession();
+      await CallNotificationService.deactivateStudentSession();
+    } catch (error) {
+      debugPrint('Student logout failed: $error');
+      _isEndingStudentSession = false;
+      _startStudentSessionGuard();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text(
+              'Could not log out. Check your internet connection and try again.',
+            ),
+            backgroundColor: AppColors.accentRed,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    if (mounted) {
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const LandingPage()),
+        (route) => false,
+      );
+    }
   }
 
   void _showStudentProfile() {

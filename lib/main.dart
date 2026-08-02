@@ -17,6 +17,7 @@ import 'pages/student_dashboard_page.dart';
 import 'pages/teacher_dashboard_page.dart';
 import 'services/call_manager.dart';
 import 'services/call_notification_service.dart';
+import 'services/student_session_service.dart';
 import 'theme/app_theme.dart';
 
 @pragma('vm:entry-point')
@@ -171,40 +172,53 @@ class _AuthGateState extends State<_AuthGate> {
       final key = prefs.getString('student_data');
       if (key != null) {
         try {
-          final snapshot = await FirebaseDatabase.instance
-              .ref()
-              .child('students')
-              .child(key)
-              .get();
-          if (snapshot.value != null) {
-            final st = Map<dynamic, dynamic>.from(snapshot.value as Map);
-            st['key'] = key;
-            await CallNotificationService.activateForStudent(key);
-            if (mounted) {
-              setState(() {
-                _homePage = StudentDashboardPage(studentData: st);
-                _isLoading = false;
-                _loginCheckDone = true;
-              });
-            }
-            if (kIsWeb) {
-              final classId = Uri.base.queryParameters['classId'];
-              final topic = Uri.base.queryParameters['topic'] ?? 'Live Class';
-              if (classId != null && classId.isNotEmpty) {
-                unawaited(_openIncomingClass(<String, dynamic>{
-                  'classId': classId,
-                  'topic': topic,
-                  'startedAt': DateTime.now().millisecondsSinceEpoch.toString(),
-                }));
+          final sessionIsValid =
+              await StudentSessionService.validateCurrentSession(key);
+          if (!sessionIsValid) {
+            await CallNotificationService.deactivateStudentSession();
+            await StudentSessionService.clearLocalSession();
+          } else {
+            final snapshot = await FirebaseDatabase.instance
+                .ref()
+                .child('students')
+                .child(key)
+                .get();
+            if (snapshot.value != null) {
+              final st = Map<dynamic, dynamic>.from(snapshot.value as Map);
+              st['key'] = key;
+              await CallNotificationService.activateForStudent(key);
+              if (mounted) {
+                setState(() {
+                  _homePage = StudentDashboardPage(studentData: st);
+                  _isLoading = false;
+                  _loginCheckDone = true;
+                });
               }
+              if (kIsWeb) {
+                final classId = Uri.base.queryParameters['classId'];
+                final topic = Uri.base.queryParameters['topic'] ?? 'Live Class';
+                if (classId != null && classId.isNotEmpty) {
+                  unawaited(_openIncomingClass(<String, dynamic>{
+                    'classId': classId,
+                    'topic': topic,
+                    'startedAt': DateTime.now().millisecondsSinceEpoch.toString(),
+                  }));
+                }
+              }
+              return;
             }
-            return;
+
+            // The student was removed while this device owned the lock.
+            await CallNotificationService.deactivateStudentSession();
+            await StudentSessionService.releaseCurrentSession();
           }
-        } catch (_) {}
+        } catch (error) {
+          debugPrint('Student session restore failed: $error');
+        }
       }
       // Cleanup if failed
-      await prefs.remove('is_student_logged_in');
       await CallNotificationService.deactivateStudentSession();
+      await StudentSessionService.clearLocalSession();
     }
 
     if (mounted) {

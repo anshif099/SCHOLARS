@@ -5,9 +5,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:firebase_database/firebase_database.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
+import '../components/active_student_session_dialog.dart';
 import '../services/call_notification_service.dart';
+import '../services/student_session_service.dart';
 import '../theme/app_theme.dart';
 import 'student_dashboard_page.dart';
 
@@ -65,12 +66,19 @@ class _StudentLoginPageState extends State<StudentLoginPage>
       final studentData = await _findStudentByLoginId(loginId);
 
       if (studentData != null) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool('is_student_logged_in', true);
-        await prefs.setString(
-          'student_data',
-          studentData['key'],
-        ); // Storing reference key
+        final sessionResult = await StudentSessionService.claim(
+          studentData['key'].toString(),
+        );
+        if (!sessionResult.claimed) {
+          if (!mounted) return;
+          setState(() => _isLoading = false);
+          await showActiveStudentSessionDialog(
+            context,
+            sessionResult.activeSession,
+          );
+          return;
+        }
+
         final notificationsReady = await _activateNotifications(
           studentData['key'].toString(),
         ).timeout(const Duration(seconds: 20), onTimeout: () => false);
@@ -95,6 +103,9 @@ class _StudentLoginPageState extends State<StudentLoginPage>
         _showError('Invalid Login ID. Please try again.');
         setState(() => _isLoading = false);
       }
+    } on StudentSessionException catch (e) {
+      _showError(e.message);
+      if (mounted) setState(() => _isLoading = false);
     } on TimeoutException {
       _showError('Network timeout. Check internet and try again.');
       if (mounted) setState(() => _isLoading = false);
