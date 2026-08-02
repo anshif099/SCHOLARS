@@ -67,12 +67,23 @@ class _StudentLoginPageState extends State<StudentLoginPage>
 
       if (studentData != null) {
         final studentKey = studentData['key'].toString();
-        final activeSession =
-            await DeviceSessionService.getActiveDeviceSession(studentKey);
+
+        Map<dynamic, dynamic>? activeSession;
+        if (studentData['active_device'] is Map &&
+            (studentData['active_device'] as Map).isNotEmpty) {
+          activeSession =
+              Map<dynamic, dynamic>.from(studentData['active_device'] as Map);
+        } else {
+          activeSession =
+              await DeviceSessionService.getActiveDeviceSession(studentKey);
+        }
+
         final localDeviceId = await DeviceSessionService.getDeviceId();
 
         if (activeSession != null &&
-            activeSession['device_id'] != localDeviceId) {
+            activeSession['device_id'] != null &&
+            activeSession['device_id'].toString().isNotEmpty &&
+            activeSession['device_id'].toString() != localDeviceId) {
           if (!mounted) return;
           await _showActiveDeviceBlockedDialog(
             studentData: studentData,

@@ -6,15 +6,26 @@ import 'package:uuid/uuid.dart';
 
 class DeviceSessionService {
   static const String _prefKeyDeviceId = 'local_device_id';
+  static String? _cachedDeviceId;
 
-  /// Returns a persistent unique device ID for this device.
+  /// Returns a persistent unique device ID for this device session.
   static Future<String> getDeviceId() async {
+    if (_cachedDeviceId != null && _cachedDeviceId!.isNotEmpty) {
+      return _cachedDeviceId!;
+    }
+
+    if (kIsWeb) {
+      _cachedDeviceId = const Uuid().v4();
+      return _cachedDeviceId!;
+    }
+
     final prefs = await SharedPreferences.getInstance();
     String? deviceId = prefs.getString(_prefKeyDeviceId);
     if (deviceId == null || deviceId.isEmpty) {
       deviceId = const Uuid().v4();
       await prefs.setString(_prefKeyDeviceId, deviceId);
     }
+    _cachedDeviceId = deviceId;
     return deviceId;
   }
 
