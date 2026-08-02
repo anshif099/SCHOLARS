@@ -74,12 +74,12 @@ class _StudentLoginPageState extends State<StudentLoginPage>
         if (activeSession != null &&
             activeSession['device_id'] != localDeviceId) {
           if (!mounted) return;
-          final shouldForceLogin =
-              await _showActiveDeviceDialog(activeSession);
-          if (!shouldForceLogin) {
-            if (mounted) setState(() => _isLoading = false);
-            return;
-          }
+          await _showActiveDeviceBlockedDialog(
+            studentData: studentData,
+            activeDevice: activeSession,
+          );
+          if (mounted) setState(() => _isLoading = false);
+          return;
         }
 
         // Register active device session in Firebase Database
@@ -131,20 +131,28 @@ class _StudentLoginPageState extends State<StudentLoginPage>
     }
   }
 
-  Future<bool> _showActiveDeviceDialog(
-      Map<dynamic, dynamic> activeDevice) async {
+  Future<void> _showActiveDeviceBlockedDialog({
+    required Map<dynamic, dynamic> studentData,
+    required Map<dynamic, dynamic> activeDevice,
+  }) async {
+    final studentName = studentData['name']?.toString() ??
+        studentData['student_name']?.toString() ??
+        'Student';
+    final loginId = studentData['login_id']?.toString() ?? 'N/A';
+    final studentClass = studentData['class_id']?.toString() ?? '';
+    final studentMobile = studentData['mobile']?.toString() ?? '';
+
     final deviceName =
         activeDevice['device_name']?.toString() ?? 'Other Device';
     final platform =
         activeDevice['platform']?.toString() ?? 'Unknown Platform';
     final loginTime = activeDevice['login_time']?.toString() ?? 'Recently';
 
-    final result = await showDialog<bool>(
+    await showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: Row(
           children: [
             Container(
@@ -154,7 +162,7 @@ class _StudentLoginPageState extends State<StudentLoginPage>
                 shape: BoxShape.circle,
               ),
               child: const Icon(
-                Icons.devices_other_rounded,
+                Icons.lock_rounded,
                 color: AppColors.accentRed,
                 size: 24,
               ),
@@ -162,7 +170,7 @@ class _StudentLoginPageState extends State<StudentLoginPage>
             const SizedBox(width: 12),
             Expanded(
               child: Text(
-                'Account Logged In',
+                'Already Logged In',
                 style: GoogleFonts.poppins(
                   fontSize: 18,
                   fontWeight: FontWeight.w600,
@@ -172,96 +180,209 @@ class _StudentLoginPageState extends State<StudentLoginPage>
             ),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'This Student ID is currently logged in on another device:',
-              style: GoogleFonts.poppins(
-                fontSize: 14,
-                color: AppColors.textSecondary,
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'This student account is currently active on another device.',
+                style: GoogleFonts.poppins(
+                  fontSize: 13.5,
+                  color: AppColors.textSecondary,
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: AppColors.background,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.divider),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.phonelink_rounded,
-                          size: 18, color: AppColors.primaryNavy),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          '$deviceName ($platform)',
-                          style: GoogleFonts.poppins(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.primaryNavy,
+              const SizedBox(height: 16),
+
+              // Student Details Card
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppColors.primaryNavy.withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: AppColors.primaryNavy.withValues(alpha: 0.15),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Student Details',
+                      style: GoogleFonts.poppins(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.primaryNavy,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        const Icon(Icons.person_outline_rounded,
+                            size: 16, color: AppColors.primaryNavy),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            studentName,
+                            style: GoogleFonts.poppins(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.textPrimary,
+                            ),
                           ),
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  Row(
-                    children: [
-                      const Icon(Icons.access_time_rounded,
-                          size: 16, color: AppColors.textLight),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Logged in: $loginTime',
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        const Icon(Icons.badge_outlined,
+                            size: 16, color: AppColors.textLight),
+                        const SizedBox(width: 8),
+                        Text(
+                          'ID: $loginId',
                           style: GoogleFonts.poppins(
                             fontSize: 13,
                             color: AppColors.textLight,
                           ),
                         ),
+                        if (studentClass.isNotEmpty) ...[
+                          const SizedBox(width: 12),
+                          Text(
+                            'Class: $studentClass',
+                            style: GoogleFonts.poppins(
+                              fontSize: 13,
+                              color: AppColors.textLight,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    if (studentMobile.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          const Icon(Icons.phone_outlined,
+                              size: 16, color: AppColors.textLight),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Mobile: $studentMobile',
+                            style: GoogleFonts.poppins(
+                              fontSize: 13,
+                              color: AppColors.textLight,
+                            ),
+                          ),
+                        ],
                       ),
                     ],
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'Logging in here will automatically log out the active device. Do you wish to continue?',
-              style: GoogleFonts.poppins(
-                fontSize: 13,
-                color: AppColors.textSecondary,
-                fontWeight: FontWeight.w500,
+
+              const SizedBox(height: 12),
+
+              // Active Logged Device Details Card
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppColors.background,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppColors.divider),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Active Logged Device',
+                      style: GoogleFonts.poppins(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.accentRed,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        const Icon(Icons.phonelink_rounded,
+                            size: 16, color: AppColors.primaryNavy),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '$deviceName ($platform)',
+                            style: GoogleFonts.poppins(
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.primaryNavy,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        const Icon(Icons.access_time_rounded,
+                            size: 16, color: AppColors.textLight),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Logged in: $loginTime',
+                            style: GoogleFonts.poppins(
+                              fontSize: 13,
+                              color: AppColors.textLight,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: AppColors.accentRed.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.info_outline_rounded,
+                        size: 18, color: AppColors.accentRed),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Please log out from the active device first to log in on this device.',
+                        style: GoogleFonts.poppins(
+                          fontSize: 12.5,
+                          color: AppColors.accentRed,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: Text(
-              'Cancel',
-              style: GoogleFonts.poppins(color: AppColors.textLight),
-            ),
-          ),
           ElevatedButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
+            onPressed: () => Navigator.of(ctx).pop(),
             style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.accentRed,
+              backgroundColor: AppColors.primaryNavy,
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(10),
               ),
             ),
             child: Text(
-              'Log Out Other Device',
+              'Understood',
               style: GoogleFonts.poppins(
                 fontWeight: FontWeight.w600,
                 fontSize: 13,
@@ -271,8 +392,6 @@ class _StudentLoginPageState extends State<StudentLoginPage>
         ],
       ),
     );
-
-    return result ?? false;
   }
 
   Future<Map<dynamic, dynamic>?> _findStudentByLoginId(String loginId) async {
