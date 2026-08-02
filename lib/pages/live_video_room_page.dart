@@ -63,7 +63,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   static const String _recordingQuality = '360p';
   static const Duration _recorderStopTimeout = Duration(seconds: 10);
   static const Duration _roomCleanupTimeout = Duration(seconds: 6);
-  static const Duration _uploadTimeout = Duration(minutes: 5);
+  static const Duration _uploadRetryLimit = Duration(minutes: 30);
   static const Duration _studentReconnectDelay = Duration(seconds: 2);
   static const Duration _studentConnectTimeout = Duration(seconds: 12);
   static const int _maxStudentReconnectAttempts = 3;
@@ -119,7 +119,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   bool _showStudentReconnectAction = false;
   RTCPeerConnection? _loopbackConnectionA;
   RTCPeerConnection? _loopbackConnectionB;
-  Uint8List? _webRecordedBytes;
+  dynamic _webRecordedBlob;
   final _webRecordingHelper = WebRecordingHelper();
 
   String _statusMessage = '';
@@ -1894,8 +1894,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     bool success = false;
     try {
       if (kIsWeb) {
-        _webRecordedBytes = await _webRecordingHelper.stop();
-        success = _webRecordedBytes != null && _webRecordedBytes!.isNotEmpty;
+        _webRecordedBlob = await _webRecordingHelper.stop();
+        success =
+            _webRecordedBlob != null &&
+            _webRecordingHelper.recordedSizeBytes > 0;
       } else {
         await recorder.stop().timeout(_recorderStopTimeout);
         debugPrint('MediaRecorder stopped successfully');
@@ -2020,7 +2022,47 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         'upload_error': uploadError,
         'file_size_bytes': ?fileSizeBytes,
         'storage_path': ?storagePath,
+        'upload_progress': 0,
+        'upload_updated_at': DateTime.now().millisecondsSinceEpoch,
       });
+    }
+
+    Future<TaskSnapshot> waitForRecordingUpload(UploadTask uploadTask) async {
+      FirebaseStorage.instance.setMaxUploadRetryTime(_uploadRetryLimit);
+      var lastPublishedProgress = -5;
+      Future<void> pendingProgressUpdate = Future<void>.value();
+      final progressSubscription = uploadTask.snapshotEvents.listen((snapshot) {
+        final totalBytes = snapshot.totalBytes;
+        final progress = totalBytes <= 0
+            ? 0
+            : ((snapshot.bytesTransferred * 100) / totalBytes)
+                  .clamp(0, 100)
+                  .round();
+
+        if (mounted) {
+          setState(() => _statusMessage = 'Uploading video... $progress%');
+        }
+
+        if (progress >= lastPublishedProgress + 5 || progress == 100) {
+          lastPublishedProgress = progress;
+          pendingProgressUpdate = pendingProgressUpdate.then(
+            (_) => updateRecordedClass(<String, dynamic>{
+              'upload_status': 'uploading',
+              'upload_progress': progress,
+              'upload_updated_at': DateTime.now().millisecondsSinceEpoch,
+            }),
+          );
+        }
+      });
+
+      try {
+        return await uploadTask;
+      } finally {
+        await progressSubscription.cancel();
+        // Finish queued progress writes before the caller writes the final
+        // ready/failed state, otherwise a late "uploading" update can win.
+        await pendingProgressUpdate;
+      }
     }
 
     try {
@@ -2056,7 +2098,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       );
       return false;
     } else if (kIsWeb) {
-      if (_webRecordedBytes == null || _webRecordedBytes!.isEmpty) {
+      if (_webRecordedBlob == null ||
+          _webRecordingHelper.recordedSizeBytes <= 0) {
         debugPrint('Recording upload skipped: no bytes recorded.');
         await markRecordingFailed('empty_file', 'No bytes were recorded.');
         return false;
@@ -2078,7 +2121,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       final recordedMime = _webRecordingHelper.recordedMimeType;
       final fileExtension = recordedMime.contains('mp4') ? 'mp4' : 'webm';
 
-      fileSizeBytes = _webRecordedBytes!.length;
+      fileSizeBytes = _webRecordingHelper.recordedSizeBytes;
       storagePath =
           'recorded_classes/${widget.classId}/${recordedAt}_360p_1mbpm.$fileExtension';
       final storageRef = FirebaseStorage.instance.ref().child(storagePath);
@@ -2098,6 +2141,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         'upload_status': 'uploading',
         'storage_path': storagePath,
         'file_size_bytes': fileSizeBytes,
+        'upload_progress': 0,
+        'upload_updated_at': DateTime.now().millisecondsSinceEpoch,
       });
 
       final metadata = SettableMetadata(
@@ -2106,21 +2151,24 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       );
 
       try {
-        final snapshot = await storageRef
-            .putData(_webRecordedBytes!, metadata)
-            .timeout(_uploadTimeout);
+        final snapshot = await waitForRecordingUpload(
+          storageRef.putBlob(_webRecordedBlob, metadata),
+        );
         if (snapshot.state == TaskState.success) {
           videoUrl = await storageRef.getDownloadURL().timeout(
             const Duration(seconds: 30),
           );
           uploadStatus = 'ready';
           debugPrint('Video uploaded to Storage: $videoUrl');
-          _webRecordedBytes = null;
+          _webRecordedBlob = null;
           await updateRecordedClass(<String, dynamic>{
             'video_url': videoUrl,
             'upload_status': uploadStatus,
             'storage_path': storagePath,
             'mime_type': recordedMime,
+            'upload_progress': 100,
+            'upload_updated_at': DateTime.now().millisecondsSinceEpoch,
+            'upload_error': null,
           });
           return true;
         } else {
@@ -2130,8 +2178,14 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
           );
           return false;
         }
+      } on FirebaseException catch (e) {
+        await markRecordingFailed(
+          'upload_failed',
+          _formatFirebaseStorageError(e),
+        );
+        return false;
       } catch (e) {
-        await markRecordingFailed('upload_failed', e.toString());
+        await markRecordingFailed('upload_failed', 'Video upload failed: $e');
         return false;
       }
     } else if (videoPath != null) {
@@ -2178,6 +2232,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
               'upload_status': 'uploading',
               'storage_path': storagePath,
               'file_size_bytes': fileSizeBytes,
+              'upload_progress': 0,
+              'upload_updated_at': DateTime.now().millisecondsSinceEpoch,
             });
 
             final metadata = SettableMetadata(
@@ -2185,9 +2241,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
               customMetadata: customMetadata,
             );
 
-            final snapshot = await storageRef
-                .putFile(file, metadata)
-                .timeout(_uploadTimeout);
+            final snapshot = await waitForRecordingUpload(
+              storageRef.putFile(file, metadata),
+            );
             if (snapshot.state == TaskState.success) {
               videoUrl = await storageRef.getDownloadURL().timeout(
                 const Duration(seconds: 30),
@@ -2201,6 +2257,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                 'file_size_bytes': fileSizeBytes,
                 'upload_error': null,
                 'mime_type': 'video/mp4',
+                'upload_progress': 100,
+                'upload_updated_at': DateTime.now().millisecondsSinceEpoch,
               });
 
               try {
@@ -2215,12 +2273,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
               return false;
             }
           }
-        } on TimeoutException catch (e) {
-          final error =
-              'Video upload timed out after ${_uploadTimeout.inMinutes} minutes: $e';
-          debugPrint('Recording upload failed: $error');
-          await markRecordingFailed('timeout', error);
-          return false;
         } on FirebaseException catch (e) {
           final error = _formatFirebaseStorageError(e);
           debugPrint('Recording upload failed: $error');

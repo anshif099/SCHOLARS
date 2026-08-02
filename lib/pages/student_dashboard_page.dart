@@ -22,6 +22,25 @@ import '../services/firebase_upload_auth_service.dart';
 import '../components/fresh_stream_builder.dart';
 import '../components/universal_image.dart';
 
+bool _isRecordingUploadPending(Map recording) {
+  final status = recording['upload_status']?.toString();
+  if (status != 'preparing' && status != 'uploading') {
+    return false;
+  }
+
+  final rawTimestamp = recording['upload_updated_at'] ?? recording['date'];
+  final timestamp = rawTimestamp is int
+      ? rawTimestamp
+      : int.tryParse(rawTimestamp?.toString() ?? '');
+  if (timestamp == null) {
+    return true;
+  }
+
+  final age = DateTime.now().millisecondsSinceEpoch - timestamp;
+  return age >= -const Duration(minutes: 5).inMilliseconds &&
+      age <= const Duration(minutes: 45).inMilliseconds;
+}
+
 class StudentDashboardPage extends StatefulWidget {
   final Map<dynamic, dynamic> studentData;
   final bool showNotificationWarning;
@@ -49,7 +68,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
     final targetType = commonClass['target_type']?.toString();
     final myClassId = widget.studentData['class_id']?.toString().trim();
     final myStudentKey = widget.studentData['key']?.toString().trim();
-    
+
     if (targetType == 'class') {
       final classIdsMap = commonClass['class_ids'] as Map?;
       return classIdsMap != null && classIdsMap.containsKey(myClassId);
@@ -74,26 +93,28 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
         .child('teachers')
         .onValue
         .listen((event) {
-      if (event.snapshot.value != null) {
-        final Map<dynamic, dynamic> map = Map<dynamic, dynamic>.from(event.snapshot.value as Map);
-        final newCommonIds = <String>{};
-        for (var entry in map.entries) {
-          final data = Map<dynamic, dynamic>.from(entry.value as Map);
-          if (data['is_common'] == true && _isStudentTargeted(data)) {
-            final classId = data['class_id']?.toString();
-            if (classId != null && classId.isNotEmpty) {
-              newCommonIds.add(classId);
+          if (event.snapshot.value != null) {
+            final Map<dynamic, dynamic> map = Map<dynamic, dynamic>.from(
+              event.snapshot.value as Map,
+            );
+            final newCommonIds = <String>{};
+            for (var entry in map.entries) {
+              final data = Map<dynamic, dynamic>.from(entry.value as Map);
+              if (data['is_common'] == true && _isStudentTargeted(data)) {
+                final classId = data['class_id']?.toString();
+                if (classId != null && classId.isNotEmpty) {
+                  newCommonIds.add(classId);
+                }
+              }
+            }
+            if (mounted) {
+              setState(() {
+                _myCommonClassIds.clear();
+                _myCommonClassIds.addAll(newCommonIds);
+              });
             }
           }
-        }
-        if (mounted) {
-          setState(() {
-            _myCommonClassIds.clear();
-            _myCommonClassIds.addAll(newCommonIds);
-          });
-        }
-      }
-    });
+        });
   }
 
   @override
@@ -410,8 +431,8 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
       CallNotificationService.deactivateStudentSession()
           .timeout(const Duration(seconds: 5))
           .catchError((Object error, StackTrace stackTrace) {
-        debugPrint('Student notification cleanup skipped: $error');
-      }),
+            debugPrint('Student notification cleanup skipped: $error');
+          }),
     );
   }
 
@@ -493,8 +514,11 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                     'Login ID: ${widget.studentData['login_id'] ?? 'N/A'}',
                   ),
                   if (widget.studentData['teacher_name'] != null &&
-                      widget.studentData['teacher_name'].toString().isNotEmpty &&
-                      widget.studentData['teacher_name'].toString() != 'Unknown') ...[
+                      widget.studentData['teacher_name']
+                          .toString()
+                          .isNotEmpty &&
+                      widget.studentData['teacher_name'].toString() !=
+                          'Unknown') ...[
                     const Divider(height: 30),
                     _buildProfileRow(
                       Icons.assignment_ind_rounded,
@@ -599,10 +623,14 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
           return const SizedBox.shrink();
         }
 
-        final map = Map<dynamic, dynamic>.from(snapshot.data!.snapshot.value as Map);
+        final map = Map<dynamic, dynamic>.from(
+          snapshot.data!.snapshot.value as Map,
+        );
         final commonClassesList = map.entries
             .map((e) => {'key': e.key, ...Map<dynamic, dynamic>.from(e.value)})
-            .where((item) => item['is_common'] == true && _isStudentTargeted(item))
+            .where(
+              (item) => item['is_common'] == true && _isStudentTargeted(item),
+            )
             .toList();
 
         if (commonClassesList.isEmpty) {
@@ -655,7 +683,9 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                         border: Border.all(color: AppColors.divider),
                         boxShadow: [
                           BoxShadow(
-                            color: AppColors.primaryNavy.withValues(alpha: 0.02),
+                            color: AppColors.primaryNavy.withValues(
+                              alpha: 0.02,
+                            ),
                             blurRadius: 8,
                             offset: const Offset(0, 2),
                           ),
@@ -966,7 +996,8 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
             }
 
             final notice = Map<dynamic, dynamic>.from(
-                snapshot.data!.snapshot.value as Map);
+              snapshot.data!.snapshot.value as Map,
+            );
             final noticeText = notice['text']?.toString();
             final createdAt = notice['created_at'] as int?;
 
@@ -976,8 +1007,9 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
 
             String timeAgo = '';
             if (createdAt != null) {
-              final diff = DateTime.now()
-                  .difference(DateTime.fromMillisecondsSinceEpoch(createdAt));
+              final diff = DateTime.now().difference(
+                DateTime.fromMillisecondsSinceEpoch(createdAt),
+              );
               if (diff.inDays > 0) {
                 timeAgo = '${diff.inDays}d ago';
               } else if (diff.inHours > 0) {
@@ -1014,11 +1046,14 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                     // Header
                     Container(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 12),
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
                       decoration: const BoxDecoration(
                         color: Color(0xFFFEF3C7),
                         borderRadius: BorderRadius.vertical(
-                            top: Radius.circular(18)),
+                          top: Radius.circular(18),
+                        ),
                       ),
                       child: Row(
                         children: [
@@ -1026,8 +1061,9 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                             width: 32,
                             height: 32,
                             decoration: BoxDecoration(
-                              color: const Color(0xFFF59E0B)
-                                  .withValues(alpha: 0.15),
+                              color: const Color(
+                                0xFFF59E0B,
+                              ).withValues(alpha: 0.15),
                               borderRadius: BorderRadius.circular(10),
                             ),
                             child: const Icon(
@@ -1089,18 +1125,25 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
           stream: FirebaseDatabase.instance.ref().child('live_classes').onValue,
           builder: (context, snapshot) {
             final List<Widget> liveCards = [];
-            final myMainClassId = widget.studentData['class_id']?.toString() ?? '';
+            final myMainClassId =
+                widget.studentData['class_id']?.toString() ?? '';
 
             if (snapshot.hasData && snapshot.data!.snapshot.value != null) {
-              final parentMap = Map<dynamic, dynamic>.from(snapshot.data!.snapshot.value as Map);
+              final parentMap = Map<dynamic, dynamic>.from(
+                snapshot.data!.snapshot.value as Map,
+              );
               for (var entry in parentMap.entries) {
                 final classId = entry.key.toString();
-                final classData = Map<dynamic, dynamic>.from(entry.value as Map);
-                
+                final classData = Map<dynamic, dynamic>.from(
+                  entry.value as Map,
+                );
+
                 final isLive = classData['is_live'] == true;
                 final liveTopic = classData['topic'] ?? 'Live Class';
-                
-                if (isLive && (classId == myMainClassId || _myCommonClassIds.contains(classId))) {
+
+                if (isLive &&
+                    (classId == myMainClassId ||
+                        _myCommonClassIds.contains(classId))) {
                   liveCards.add(
                     Padding(
                       padding: const EdgeInsets.only(top: 24),
@@ -1111,10 +1154,15 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                           decoration: BoxDecoration(
                             color: AppColors.accentRed.withValues(alpha: 0.1),
                             borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: AppColors.accentRed, width: 2),
+                            border: Border.all(
+                              color: AppColors.accentRed,
+                              width: 2,
+                            ),
                             boxShadow: [
                               BoxShadow(
-                                color: AppColors.accentRed.withValues(alpha: 0.2),
+                                color: AppColors.accentRed.withValues(
+                                  alpha: 0.2,
+                                ),
                                 blurRadius: 15,
                                 offset: const Offset(0, 4),
                               ),
@@ -1230,7 +1278,9 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                         .child(mainClassId)
                         .get();
                     if (snapshot.exists) {
-                      final data = Map<dynamic, dynamic>.from(snapshot.value as Map);
+                      final data = Map<dynamic, dynamic>.from(
+                        snapshot.value as Map,
+                      );
                       if (data['is_live'] == true) {
                         _joinCall(mainClassId, data['topic'] ?? 'Live Class');
                         return;
@@ -1245,7 +1295,9 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                         .child(commonClassId)
                         .get();
                     if (snapshot.exists) {
-                      final data = Map<dynamic, dynamic>.from(snapshot.value as Map);
+                      final data = Map<dynamic, dynamic>.from(
+                        snapshot.value as Map,
+                      );
                       if (data['is_live'] == true) {
                         _joinCall(commonClassId, data['topic'] ?? 'Live Class');
                         return;
@@ -1331,8 +1383,6 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
             ),
           ],
         ),
-
-
       ],
     );
   }
@@ -1350,8 +1400,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   String? _recordingStatusLabel(Map<String, dynamic> recording) {
     if (_hasPlayableRecording(recording)) return null;
 
-    final status = recording['upload_status']?.toString();
-    if (status == 'preparing' || status == 'uploading') {
+    if (_isRecordingUploadPending(recording)) {
       return 'Uploading';
     }
     return 'Upload failed';
@@ -1362,16 +1411,14 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
       return Icons.play_circle_fill_rounded;
     }
 
-    final status = recording['upload_status']?.toString();
-    if (status == 'preparing' || status == 'uploading') {
+    if (_isRecordingUploadPending(recording)) {
       return Icons.cloud_upload_rounded;
     }
     return Icons.cloud_off_rounded;
   }
 
   String _recordingUnavailableMessage(Map<String, dynamic> recording) {
-    final status = recording['upload_status']?.toString();
-    if (status == 'preparing' || status == 'uploading') {
+    if (_isRecordingUploadPending(recording)) {
       return 'Video is still uploading. Try again shortly.';
     }
 
@@ -1386,32 +1433,55 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   Widget _buildRecordedClassesList() {
     final classId = widget.studentData['class_id'] ?? '';
     return StreamBuilder<DatabaseEvent>(
-      stream: FirebaseDatabase.instance.ref().child('subjects').child(classId).onValue,
+      stream: FirebaseDatabase.instance
+          .ref()
+          .child('subjects')
+          .child(classId)
+          .onValue,
       builder: (context, subjectsSnapshot) {
         return StreamBuilder<DatabaseEvent>(
-          stream: FirebaseDatabase.instance.ref().child('recorded_classes').child(classId).onValue,
+          stream: FirebaseDatabase.instance
+              .ref()
+              .child('recorded_classes')
+              .child(classId)
+              .onValue,
           builder: (context, recordingsSnapshot) {
             List<Map<String, dynamic>> subjectsList = [];
 
-            if (subjectsSnapshot.hasData && subjectsSnapshot.data!.snapshot.value != null) {
-              final map = Map<dynamic, dynamic>.from(subjectsSnapshot.data!.snapshot.value as Map);
-              final list = map.entries.map((e) => {
-                'key': e.key,
-                ...Map<String, dynamic>.from(e.value)
-              }).toList();
-              list.sort((a, b) => (a['name']?.toString() ?? '').compareTo(b['name']?.toString() ?? ''));
+            if (subjectsSnapshot.hasData &&
+                subjectsSnapshot.data!.snapshot.value != null) {
+              final map = Map<dynamic, dynamic>.from(
+                subjectsSnapshot.data!.snapshot.value as Map,
+              );
+              final list = map.entries
+                  .map(
+                    (e) => {
+                      'key': e.key,
+                      ...Map<String, dynamic>.from(e.value),
+                    },
+                  )
+                  .toList();
+              list.sort(
+                (a, b) => (a['name']?.toString() ?? '').compareTo(
+                  b['name']?.toString() ?? '',
+                ),
+              );
               subjectsList.addAll(list);
             }
 
             List<Map<String, dynamic>> recordingsList = [];
-            if (recordingsSnapshot.hasData && recordingsSnapshot.data!.snapshot.value != null) {
-              final map = Map<dynamic, dynamic>.from(recordingsSnapshot.data!.snapshot.value as Map);
+            if (recordingsSnapshot.hasData &&
+                recordingsSnapshot.data!.snapshot.value != null) {
+              final map = Map<dynamic, dynamic>.from(
+                recordingsSnapshot.data!.snapshot.value as Map,
+              );
               recordingsList = map.entries
                   .map((e) => Map<String, dynamic>.from(e.value))
                   .toList();
             }
 
-            final Map<String, List<Map<String, dynamic>>> groupedRecordings = {};
+            final Map<String, List<Map<String, dynamic>>> groupedRecordings =
+                {};
             for (var rc in recordingsList) {
               final subId = rc['subject_id']?.toString();
               if (subId != null) {
@@ -1462,7 +1532,8 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                             subjectName: subjectName,
                             isTeacher: false,
                             classId: classId,
-                            participantId: widget.studentData['key']?.toString() ?? '',
+                            participantId:
+                                widget.studentData['key']?.toString() ?? '',
                             subjectKey: subjectKey,
                           ),
                         ),
@@ -1477,7 +1548,9 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                         border: Border.all(color: AppColors.divider),
                         boxShadow: [
                           BoxShadow(
-                            color: AppColors.primaryNavy.withValues(alpha: 0.02),
+                            color: AppColors.primaryNavy.withValues(
+                              alpha: 0.02,
+                            ),
                             blurRadius: 8,
                             offset: const Offset(0, 2),
                           ),
@@ -1521,9 +1594,9 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                 },
               ),
             );
-          }
+          },
         );
-      }
+      },
     );
   }
 
@@ -1713,8 +1786,7 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
   String? _recordingStatusLabel(Map<dynamic, dynamic> recording) {
     if (_hasPlayableRecording(recording)) return null;
 
-    final status = recording['upload_status']?.toString();
-    if (status == 'preparing' || status == 'uploading') {
+    if (_isRecordingUploadPending(recording)) {
       return 'Uploading';
     }
     return 'Upload failed';
@@ -1725,16 +1797,14 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
       return Icons.play_circle_fill_rounded;
     }
 
-    final status = recording['upload_status']?.toString();
-    if (status == 'preparing' || status == 'uploading') {
+    if (_isRecordingUploadPending(recording)) {
       return Icons.cloud_upload_rounded;
     }
     return Icons.cloud_off_rounded;
   }
 
   String _recordingUnavailableMessage(Map<dynamic, dynamic> recording) {
-    final status = recording['upload_status']?.toString();
-    if (status == 'preparing' || status == 'uploading') {
+    if (_isRecordingUploadPending(recording)) {
       return 'Video is still uploading. Try again shortly.';
     }
 
@@ -1778,9 +1848,15 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
     });
   }
 
-  Future<void> _uploadCustomThumbnail(BuildContext context, String recordingKey) async {
+  Future<void> _uploadCustomThumbnail(
+    BuildContext context,
+    String recordingKey,
+  ) async {
     final picker = ImagePicker();
-    final pickedFile = await picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
+    final pickedFile = await picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 70,
+    );
     if (pickedFile == null) return;
 
     // Show loader
@@ -1807,7 +1883,9 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
     try {
       final authUid = await FirebaseUploadAuthService.ensureSignedIn();
       if (authUid == null) {
-        throw Exception('Firebase authentication failed. Ensure anonymous sign-in is enabled in Firebase Console.');
+        throw Exception(
+          'Firebase authentication failed. Ensure anonymous sign-in is enabled in Firebase Console.',
+        );
       }
       final ref = FirebaseStorage.instance
           .ref()
@@ -1817,10 +1895,7 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
 
       if (kIsWeb) {
         final bytes = await pickedFile.readAsBytes();
-        await ref.putData(
-          bytes,
-          SettableMetadata(contentType: 'image/jpeg'),
-        );
+        await ref.putData(bytes, SettableMetadata(contentType: 'image/jpeg'));
       } else {
         final file = File(pickedFile.path);
         await ref.putFile(file);
@@ -1853,14 +1928,15 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
     }
   }
 
-
-
-  Future<void> _openNote(BuildContext context, Map<dynamic, dynamic> note) async {
+  Future<void> _openNote(
+    BuildContext context,
+    Map<dynamic, dynamic> note,
+  ) async {
     final fileUrl = note['file_url']?.toString();
     if (fileUrl == null || fileUrl.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('File link is empty.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('File link is empty.')));
       return;
     }
 
@@ -1876,9 +1952,9 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
           );
         }
       } catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error opening PDF: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error opening PDF: $e')));
       }
     } else {
       Navigator.of(context).push(
@@ -1892,20 +1968,28 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
     }
   }
 
-  Future<void> _deleteNote(BuildContext context, String noteKey, String fileUrl) async {
+  Future<void> _deleteNote(
+    BuildContext context,
+    String noteKey,
+    String fileUrl,
+  ) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text('Delete Note?'),
-        content: const Text('This action cannot be undone and will delete the note file.'),
+        content: const Text(
+          'This action cannot be undone and will delete the note file.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accentRed),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.accentRed,
+            ),
             onPressed: () => Navigator.of(ctx).pop(true),
             child: const Text('Delete', style: TextStyle(color: Colors.white)),
           ),
@@ -1960,9 +2044,9 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
         }
       } catch (e) {
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Failed to delete note: $e')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Failed to delete note: $e')));
         }
       } finally {
         dialogClosed = true;
@@ -2015,7 +2099,9 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
               }
               if (selectedFile == null) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Please select a file to upload.')),
+                  const SnackBar(
+                    content: Text('Please select a file to upload.'),
+                  ),
                 );
                 return;
               }
@@ -2025,13 +2111,20 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
               });
 
               try {
-                final authUid = await FirebaseUploadAuthService.ensureSignedIn();
+                final authUid =
+                    await FirebaseUploadAuthService.ensureSignedIn();
                 if (authUid == null) {
-                  throw Exception('Firebase authentication failed. Ensure anonymous sign-in is enabled in Firebase Console.');
+                  throw Exception(
+                    'Firebase authentication failed. Ensure anonymous sign-in is enabled in Firebase Console.',
+                  );
                 }
 
-                final noteKey = FirebaseDatabase.instance.ref().push().key ?? DateTime.now().millisecondsSinceEpoch.toString();
-                final fileExtension = selectedFile!.extension ?? (noteType == 'pdf' ? 'pdf' : 'jpg');
+                final noteKey =
+                    FirebaseDatabase.instance.ref().push().key ??
+                    DateTime.now().millisecondsSinceEpoch.toString();
+                final fileExtension =
+                    selectedFile!.extension ??
+                    (noteType == 'pdf' ? 'pdf' : 'jpg');
                 final ref = FirebaseStorage.instance
                     .ref()
                     .child('notes')
@@ -2076,7 +2169,9 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                 if (context.mounted) {
                   setState(() => _notesStreamKey++); // Force notes list refresh
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Note uploaded successfully!')),
+                    const SnackBar(
+                      content: Text('Note uploaded successfully!'),
+                    ),
                   );
                 }
               } catch (e) {
@@ -2095,10 +2190,15 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
             }
 
             return AlertDialog(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+              ),
               title: Text(
                 'Upload Subject Notes',
-                style: GoogleFonts.poppins(fontWeight: FontWeight.bold, color: AppColors.primaryNavy),
+                style: GoogleFonts.poppins(
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.primaryNavy,
+                ),
               ),
               content: SingleChildScrollView(
                 child: Column(
@@ -2107,7 +2207,11 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                   children: [
                     Text(
                       'Note Title',
-                      style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 13, color: AppColors.textPrimary),
+                      style: GoogleFonts.poppins(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13,
+                        color: AppColors.textPrimary,
+                      ),
                     ),
                     const SizedBox(height: 6),
                     TextField(
@@ -2117,13 +2221,20 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                         hintText: 'e.g., Chapter 1 Formula Sheet',
                         filled: true,
                         fillColor: Colors.grey.withValues(alpha: 0.05),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: BorderSide.none,
+                        ),
                       ),
                     ),
                     const SizedBox(height: 16),
                     Text(
                       'Note Type',
-                      style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 13, color: AppColors.textPrimary),
+                      style: GoogleFonts.poppins(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13,
+                        color: AppColors.textPrimary,
+                      ),
                     ),
                     const SizedBox(height: 6),
                     Row(
@@ -2172,17 +2283,25 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                         style: GoogleFonts.poppins(),
                       ),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.primaryNavy.withValues(alpha: 0.1),
+                        backgroundColor: AppColors.primaryNavy.withValues(
+                          alpha: 0.1,
+                        ),
                         foregroundColor: AppColors.primaryNavy,
                         elevation: 0,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
                       ),
                     ),
                     if (selectedFile != null) ...[
                       const SizedBox(height: 8),
                       Text(
                         'Selected: ${selectedFile!.name}',
-                        style: GoogleFonts.poppins(fontSize: 12, color: Colors.green, fontWeight: FontWeight.w500),
+                        style: GoogleFonts.poppins(
+                          fontSize: 12,
+                          color: Colors.green,
+                          fontWeight: FontWeight.w500,
+                        ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -2197,7 +2316,7 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                           padding: EdgeInsets.all(8.0),
                           child: CircularProgressIndicator(),
                         ),
-                      )
+                      ),
                     ]
                   : [
                       TextButton(
@@ -2206,8 +2325,13 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                       ),
                       ElevatedButton(
                         onPressed: uploadNote,
-                        style: ElevatedButton.styleFrom(backgroundColor: AppColors.primaryNavy),
-                        child: const Text('Upload', style: TextStyle(color: Colors.white)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primaryNavy,
+                        ),
+                        child: const Text(
+                          'Upload',
+                          style: TextStyle(color: Colors.white),
+                        ),
                       ),
                     ],
             );
@@ -2225,7 +2349,10 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: AppColors.primaryNavy),
+          icon: const Icon(
+            Icons.arrow_back_ios_new_rounded,
+            color: AppColors.primaryNavy,
+          ),
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: Text(
@@ -2244,7 +2371,10 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
               icon: const Icon(Icons.note_add_rounded, color: Colors.white),
               label: Text(
                 'Upload Notes',
-                style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.bold),
+                style: GoogleFonts.poppins(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             )
           : null,
@@ -2329,8 +2459,15 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                 hintText: _selectedTab == 'lectures'
                     ? 'Search by topic...'
                     : 'Search by title...',
-                hintStyle: GoogleFonts.poppins(color: AppColors.textLight, fontSize: 14),
-                prefixIcon: const Icon(Icons.search_rounded, color: AppColors.primaryNavy, size: 20),
+                hintStyle: GoogleFonts.poppins(
+                  color: AppColors.textLight,
+                  fontSize: 14,
+                ),
+                prefixIcon: const Icon(
+                  Icons.search_rounded,
+                  color: AppColors.primaryNavy,
+                  size: 20,
+                ),
                 suffixIcon: _searchQuery.isNotEmpty
                     ? IconButton(
                         icon: const Icon(Icons.clear_rounded, size: 18),
@@ -2344,7 +2481,10 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                     : null,
                 filled: true,
                 fillColor: AppColors.cardBackground,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(15),
                   borderSide: BorderSide.none,
@@ -2355,7 +2495,10 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                 ),
                 focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(15),
-                  borderSide: const BorderSide(color: AppColors.primaryNavy, width: 1.5),
+                  borderSide: const BorderSide(
+                    color: AppColors.primaryNavy,
+                    width: 1.5,
+                  ),
                 ),
               ),
             ),
@@ -2378,10 +2521,16 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                       }
 
                       List<Map<dynamic, dynamic>> recordings = [];
-                      if (snapshot.hasData && snapshot.data!.snapshot.value != null) {
-                        final map = Map<dynamic, dynamic>.from(snapshot.data!.snapshot.value as Map);
+                      if (snapshot.hasData &&
+                          snapshot.data!.snapshot.value != null) {
+                        final map = Map<dynamic, dynamic>.from(
+                          snapshot.data!.snapshot.value as Map,
+                        );
                         recordings = map.entries.map((e) {
-                          return {'key': e.key, ...Map<dynamic, dynamic>.from(e.value)};
+                          return {
+                            'key': e.key,
+                            ...Map<dynamic, dynamic>.from(e.value),
+                          };
                         }).toList();
                       }
 
@@ -2398,13 +2547,18 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                       // Filter by search query
                       if (_searchQuery.isNotEmpty) {
                         recordings = recordings.where((rc) {
-                          final topic = (rc['topic']?.toString() ?? '').toLowerCase();
+                          final topic = (rc['topic']?.toString() ?? '')
+                              .toLowerCase();
                           return topic.contains(_searchQuery);
                         }).toList();
                       }
 
                       // Sort by date descending
-                      recordings.sort((a, b) => (b['date'] as int? ?? 0).compareTo(a['date'] as int? ?? 0));
+                      recordings.sort(
+                        (a, b) => (b['date'] as int? ?? 0).compareTo(
+                          a['date'] as int? ?? 0,
+                        ),
+                      );
 
                       if (recordings.isEmpty) {
                         return Center(
@@ -2412,7 +2566,9 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                             _searchQuery.isNotEmpty
                                 ? 'No matching recordings found.'
                                 : 'No recordings in this subject folder yet.',
-                            style: GoogleFonts.poppins(color: AppColors.textLight),
+                            style: GoogleFonts.poppins(
+                              color: AppColors.textLight,
+                            ),
                           ),
                         );
                       }
@@ -2426,12 +2582,18 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                           final rc = recordings[index];
                           final hasPlayable = _hasPlayableRecording(rc);
                           final statusLabel = _recordingStatusLabel(rc);
-                          final thumbnailColor = Color(rc['thumbnail_color'] ?? 0xFF3B82F6);
+                          final thumbnailColor = Color(
+                            rc['thumbnail_color'] ?? 0xFF3B82F6,
+                          );
 
                           // Likes details
-                          final likesMap = rc['likes'] is Map ? rc['likes'] as Map : null;
+                          final likesMap = rc['likes'] is Map
+                              ? rc['likes'] as Map
+                              : null;
                           final likesCount = likesMap?.length ?? 0;
-                          final isLiked = likesMap != null && likesMap[widget.participantId] == true;
+                          final isLiked =
+                              likesMap != null &&
+                              likesMap[widget.participantId] == true;
 
                           // Views count
                           final viewsCount = rc['views'] ?? 0;
@@ -2444,7 +2606,9 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                               border: Border.all(color: AppColors.divider),
                               boxShadow: [
                                 BoxShadow(
-                                  color: AppColors.primaryNavy.withValues(alpha: 0.02),
+                                  color: AppColors.primaryNavy.withValues(
+                                    alpha: 0.02,
+                                  ),
                                   blurRadius: 10,
                                   offset: const Offset(0, 4),
                                 ),
@@ -2454,10 +2618,18 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 ListTile(
-                                  contentPadding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                                  contentPadding: const EdgeInsets.fromLTRB(
+                                    16,
+                                    16,
+                                    16,
+                                    8,
+                                  ),
                                   leading: GestureDetector(
                                     onTap: widget.isTeacher
-                                        ? () => _uploadCustomThumbnail(context, rc['key'])
+                                        ? () => _uploadCustomThumbnail(
+                                            context,
+                                            rc['key'],
+                                          )
                                         : null,
                                     child: Stack(
                                       children: [
@@ -2465,20 +2637,32 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                                           width: 60,
                                           height: 60,
                                           decoration: BoxDecoration(
-                                            color: thumbnailColor.withValues(alpha: 0.15),
-                                            borderRadius: BorderRadius.circular(15),
+                                            color: thumbnailColor.withValues(
+                                              alpha: 0.15,
+                                            ),
+                                            borderRadius: BorderRadius.circular(
+                                              15,
+                                            ),
                                           ),
-                                          child: thumbnailUrl != null && thumbnailUrl.isNotEmpty
+                                          child:
+                                              thumbnailUrl != null &&
+                                                  thumbnailUrl.isNotEmpty
                                               ? ClipRRect(
-                                                  borderRadius: BorderRadius.circular(15),
+                                                  borderRadius:
+                                                      BorderRadius.circular(15),
                                                   child: UniversalImage(
                                                     imageUrl: thumbnailUrl,
                                                     fit: BoxFit.cover,
-                                                    errorBuilder: (ctx, err, stack) => Icon(
-                                                      _recordingIcon(rc),
-                                                      color: thumbnailColor,
-                                                      size: 28,
-                                                    ),
+                                                    errorBuilder:
+                                                        (
+                                                          ctx,
+                                                          err,
+                                                          stack,
+                                                        ) => Icon(
+                                                          _recordingIcon(rc),
+                                                          color: thumbnailColor,
+                                                          size: 28,
+                                                        ),
                                                   ),
                                                 )
                                               : Icon(
@@ -2518,7 +2702,8 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                                   subtitle: Padding(
                                     padding: const EdgeInsets.only(top: 4),
                                     child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
                                         Text(
                                           'Duration: ${rc['duration'] ?? 'N/A'} • Date: ${DateTime.fromMillisecondsSinceEpoch(rc['date'] ?? 0).toString().split(' ')[0]}',
@@ -2529,7 +2714,9 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                                         ),
                                         if (statusLabel != null)
                                           Padding(
-                                            padding: const EdgeInsets.only(top: 2),
+                                            padding: const EdgeInsets.only(
+                                              top: 2,
+                                            ),
                                             child: Text(
                                               statusLabel,
                                               style: GoogleFonts.poppins(
@@ -2549,10 +2736,15 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                                         icon: Container(
                                           padding: const EdgeInsets.all(8),
                                           decoration: BoxDecoration(
-                                            color: AppColors.primaryNavy.withValues(alpha: 0.08),
+                                            color: AppColors.primaryNavy
+                                                .withValues(alpha: 0.08),
                                             shape: BoxShape.circle,
                                           ),
-                                          child: const Icon(Icons.play_arrow_rounded, color: AppColors.primaryNavy, size: 22),
+                                          child: const Icon(
+                                            Icons.play_arrow_rounded,
+                                            color: AppColors.primaryNavy,
+                                            size: 22,
+                                          ),
                                         ),
                                         onPressed: () async {
                                           if (hasPlayable) {
@@ -2561,61 +2753,111 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
 
                                             final hasUrl =
                                                 rc['video_url'] != null &&
-                                                rc['video_url'].toString().isNotEmpty;
+                                                rc['video_url']
+                                                    .toString()
+                                                    .isNotEmpty;
                                             final hasBase64 =
                                                 rc['video_base64'] != null &&
-                                                rc['video_base64'].toString().isNotEmpty;
+                                                rc['video_base64']
+                                                    .toString()
+                                                    .isNotEmpty;
                                             if (context.mounted) {
                                               Navigator.of(context).push(
                                                 MaterialPageRoute(
                                                   builder: (_) => VideoPlayerPage(
-                                                    videoUrl: hasUrl ? rc['video_url'] : null,
-                                                    videoBase64: hasBase64 ? rc['video_base64'] : null,
-                                                    mimeType: rc['mime_type']?.toString(),
-                                                    title: rc['topic'] ?? 'Recorded Class',
+                                                    videoUrl: hasUrl
+                                                        ? rc['video_url']
+                                                        : null,
+                                                    videoBase64: hasBase64
+                                                        ? rc['video_base64']
+                                                        : null,
+                                                    mimeType: rc['mime_type']
+                                                        ?.toString(),
+                                                    title:
+                                                        rc['topic'] ??
+                                                        'Recorded Class',
                                                     presentationEvents:
                                                         VideoPlayerPage.parsePresentationEvents(
-                                                      rc['presentation_events'],
-                                                    ),
+                                                          rc['presentation_events'],
+                                                        ),
                                                   ),
                                                 ),
                                               );
                                             }
                                           } else {
-                                            ScaffoldMessenger.of(context).showSnackBar(
-                                              SnackBar(content: Text(_recordingUnavailableMessage(rc))),
+                                            ScaffoldMessenger.of(
+                                              context,
+                                            ).showSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                  _recordingUnavailableMessage(
+                                                    rc,
+                                                  ),
+                                                ),
+                                              ),
                                             );
                                           }
                                         },
                                       ),
                                       if (widget.isTeacher)
                                         IconButton(
-                                          icon: const Icon(Icons.delete_outline_rounded, color: AppColors.accentRed),
+                                          icon: const Icon(
+                                            Icons.delete_outline_rounded,
+                                            color: AppColors.accentRed,
+                                          ),
                                           onPressed: () async {
                                             final confirmed = await showDialog<bool>(
                                               context: context,
                                               builder: (ctx) => AlertDialog(
-                                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                                                title: const Text('Delete Recording?'),
-                                                content: const Text('This action cannot be undone.'),
+                                                shape: RoundedRectangleBorder(
+                                                  borderRadius:
+                                                      BorderRadius.circular(20),
+                                                ),
+                                                title: const Text(
+                                                  'Delete Recording?',
+                                                ),
+                                                content: const Text(
+                                                  'This action cannot be undone.',
+                                                ),
                                                 actions: [
                                                   TextButton(
-                                                    onPressed: () => Navigator.of(ctx).pop(false),
+                                                    onPressed: () =>
+                                                        Navigator.of(
+                                                          ctx,
+                                                        ).pop(false),
                                                     child: const Text('Cancel'),
                                                   ),
                                                   ElevatedButton(
-                                                    style: ElevatedButton.styleFrom(backgroundColor: AppColors.accentRed),
-                                                    onPressed: () => Navigator.of(ctx).pop(true),
-                                                    child: const Text('Delete', style: TextStyle(color: Colors.white)),
+                                                    style:
+                                                        ElevatedButton.styleFrom(
+                                                          backgroundColor:
+                                                              AppColors
+                                                                  .accentRed,
+                                                        ),
+                                                    onPressed: () =>
+                                                        Navigator.of(
+                                                          ctx,
+                                                        ).pop(true),
+                                                    child: const Text(
+                                                      'Delete',
+                                                      style: TextStyle(
+                                                        color: Colors.white,
+                                                      ),
+                                                    ),
                                                   ),
                                                 ],
                                               ),
                                             );
-                                            if (confirmed == true && rc['key'] != null) {
-                                              final videoUrl = rc['video_url']?.toString();
-                                              if (videoUrl != null && videoUrl.isNotEmpty) {
+                                            if (confirmed == true &&
+                                                rc['key'] != null) {
+                                              final videoUrl = rc['video_url']
+                                                  ?.toString();
+                                              if (videoUrl != null &&
+                                                  videoUrl.isNotEmpty) {
                                                 try {
-                                                  await FirebaseStorage.instance.refFromURL(videoUrl).delete();
+                                                  await FirebaseStorage.instance
+                                                      .refFromURL(videoUrl)
+                                                      .delete();
                                                 } catch (_) {}
                                               }
                                               await FirebaseDatabase.instance
@@ -2630,11 +2872,19 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                                     ],
                                   ),
                                 ),
-                                const Divider(height: 1, indent: 16, endIndent: 16),
+                                const Divider(
+                                  height: 1,
+                                  indent: 16,
+                                  endIndent: 16,
+                                ),
                                 Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 12,
+                                  ),
                                   child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
                                     children: [
                                       Row(
                                         children: [
@@ -2655,20 +2905,34 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                                         ],
                                       ),
                                       GestureDetector(
-                                        onTap: () => _toggleLike(rc['key'], likesMap),
+                                        onTap: () =>
+                                            _toggleLike(rc['key'], likesMap),
                                         child: Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 12,
+                                            vertical: 6,
+                                          ),
                                           decoration: BoxDecoration(
                                             color: isLiked
-                                                ? AppColors.accentRed.withValues(alpha: 0.1)
-                                                : Colors.grey.withValues(alpha: 0.1),
-                                            borderRadius: BorderRadius.circular(20),
+                                                ? AppColors.accentRed
+                                                      .withValues(alpha: 0.1)
+                                                : Colors.grey.withValues(
+                                                    alpha: 0.1,
+                                                  ),
+                                            borderRadius: BorderRadius.circular(
+                                              20,
+                                            ),
                                           ),
                                           child: Row(
                                             children: [
                                               Icon(
-                                                isLiked ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
-                                                color: isLiked ? AppColors.accentRed : AppColors.textLight,
+                                                isLiked
+                                                    ? Icons.favorite_rounded
+                                                    : Icons
+                                                          .favorite_outline_rounded,
+                                                color: isLiked
+                                                    ? AppColors.accentRed
+                                                    : AppColors.textLight,
                                                 size: 16,
                                               ),
                                               const SizedBox(width: 6),
@@ -2676,7 +2940,9 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                                                 '$likesCount',
                                                 style: GoogleFonts.poppins(
                                                   fontSize: 12,
-                                                  color: isLiked ? AppColors.accentRed : AppColors.textLight,
+                                                  color: isLiked
+                                                      ? AppColors.accentRed
+                                                      : AppColors.textLight,
                                                   fontWeight: FontWeight.w600,
                                                 ),
                                               ),
@@ -2695,123 +2961,166 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                     },
                   )
                 : FreshStreamBuilder<DatabaseEvent>(
-                        key: ValueKey('notes_stream_$_notesStreamKey'),
-                        streamFactory: () {
-                          final ref = FirebaseDatabase.instance
-                              .ref()
-                              .child('subject_notes')
-                              .child(widget.classId)
-                              .child(widget.subjectKey);
-                          ref.keepSynced(true);
-                          return ref.onValue;
-                        },
-                        builder: (context, snapshot) {
-                          if (snapshot.connectionState == ConnectionState.waiting) {
-                            return const Center(child: CircularProgressIndicator());
-                          }
-                          if (snapshot.hasError) {
-                            return Center(child: Text('Error: ${snapshot.error}'));
-                          }
+                    key: ValueKey('notes_stream_$_notesStreamKey'),
+                    streamFactory: () {
+                      final ref = FirebaseDatabase.instance
+                          .ref()
+                          .child('subject_notes')
+                          .child(widget.classId)
+                          .child(widget.subjectKey);
+                      ref.keepSynced(true);
+                      return ref.onValue;
+                    },
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const Center(child: CircularProgressIndicator());
+                      }
+                      if (snapshot.hasError) {
+                        return Center(child: Text('Error: ${snapshot.error}'));
+                      }
 
-                          List<Map<dynamic, dynamic>> notesList = [];
-                          if (snapshot.hasData && snapshot.data!.snapshot.value != null) {
-                            final map = Map<dynamic, dynamic>.from(snapshot.data!.snapshot.value as Map);
-                            notesList = map.entries.map((e) {
-                              return {'key': e.key, ...Map<dynamic, dynamic>.from(e.value)};
-                            }).toList();
-                          }
+                      List<Map<dynamic, dynamic>> notesList = [];
+                      if (snapshot.hasData &&
+                          snapshot.data!.snapshot.value != null) {
+                        final map = Map<dynamic, dynamic>.from(
+                          snapshot.data!.snapshot.value as Map,
+                        );
+                        notesList = map.entries.map((e) {
+                          return {
+                            'key': e.key,
+                            ...Map<dynamic, dynamic>.from(e.value),
+                          };
+                        }).toList();
+                      }
 
-                          // Filter notes by search query
-                          if (_searchQuery.isNotEmpty) {
-                            notesList = notesList.where((note) {
-                              final title = (note['title'] ?? '').toString().toLowerCase();
-                              return title.contains(_searchQuery);
-                            }).toList();
-                          }
+                      // Filter notes by search query
+                      if (_searchQuery.isNotEmpty) {
+                        notesList = notesList.where((note) {
+                          final title = (note['title'] ?? '')
+                              .toString()
+                              .toLowerCase();
+                          return title.contains(_searchQuery);
+                        }).toList();
+                      }
 
-                          notesList.sort((a, b) => (b['uploaded_at'] as int? ?? 0).compareTo(a['uploaded_at'] as int? ?? 0));
+                      notesList.sort(
+                        (a, b) => (b['uploaded_at'] as int? ?? 0).compareTo(
+                          a['uploaded_at'] as int? ?? 0,
+                        ),
+                      );
 
-                          if (notesList.isEmpty) {
-                            return Center(
-                              child: Text(
-                                _searchQuery.isNotEmpty
-                                    ? 'No matching notes found.'
-                                    : 'No notes uploaded for this subject yet.',
-                                style: GoogleFonts.poppins(color: AppColors.textLight),
+                      if (notesList.isEmpty) {
+                        return Center(
+                          child: Text(
+                            _searchQuery.isNotEmpty
+                                ? 'No matching notes found.'
+                                : 'No notes uploaded for this subject yet.',
+                            style: GoogleFonts.poppins(
+                              color: AppColors.textLight,
+                            ),
+                          ),
+                        );
+                      }
+
+                      return ListView.separated(
+                        physics: const BouncingScrollPhysics(),
+                        padding: const EdgeInsets.only(
+                          left: 20,
+                          right: 20,
+                          bottom: 120,
+                        ),
+                        itemCount: notesList.length,
+                        separatorBuilder: (context, index) =>
+                            const SizedBox(height: 12),
+                        itemBuilder: (context, index) {
+                          final note = notesList[index];
+                          final fileUrl = note['file_url'] ?? '';
+                          final date = note['uploaded_at'] != null
+                              ? DateTime.fromMillisecondsSinceEpoch(
+                                  note['uploaded_at'] as int,
+                                ).toString().substring(0, 16)
+                              : '';
+                          return Container(
+                            decoration: BoxDecoration(
+                              color: AppColors.cardBackground,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: AppColors.divider),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: AppColors.primaryNavy.withValues(
+                                    alpha: 0.04,
+                                  ),
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ],
+                            ),
+                            child: ListTile(
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 8,
                               ),
-                            );
-                          }
-
-                          return ListView.separated(
-                            physics: const BouncingScrollPhysics(),
-                            padding: const EdgeInsets.only(left: 20, right: 20, bottom: 120),
-                            itemCount: notesList.length,
-                            separatorBuilder: (context, index) => const SizedBox(height: 12),
-                            itemBuilder: (context, index) {
-                              final note = notesList[index];
-                              final fileUrl = note['file_url'] ?? '';
-                              final date = note['uploaded_at'] != null
-                                  ? DateTime.fromMillisecondsSinceEpoch(note['uploaded_at'] as int)
-                                      .toString()
-                                      .substring(0, 16)
-                                  : '';
-                              return Container(
+                              leading: Container(
+                                width: 44,
+                                height: 44,
                                 decoration: BoxDecoration(
-                                  color: AppColors.cardBackground,
-                                  borderRadius: BorderRadius.circular(16),
-                                  border: Border.all(color: AppColors.divider),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: AppColors.primaryNavy.withValues(alpha: 0.04),
-                                      blurRadius: 8,
-                                      offset: const Offset(0, 2),
-                                    ),
-                                  ],
+                                  color: AppColors.primaryNavy.withValues(
+                                    alpha: 0.1,
+                                  ),
+                                  shape: BoxShape.circle,
                                 ),
-                                child: ListTile(
-                                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                                  leading: Container(
-                                    width: 44,
-                                    height: 44,
-                                    decoration: BoxDecoration(
-                                      color: AppColors.primaryNavy.withValues(alpha: 0.1),
-                                      shape: BoxShape.circle,
+                                child: const Icon(
+                                  Icons.picture_as_pdf_outlined,
+                                  color: AppColors.primaryNavy,
+                                  size: 22,
+                                ),
+                              ),
+                              title: Text(
+                                note['title'] ?? 'Untitled Document',
+                                style: GoogleFonts.poppins(
+                                  fontWeight: FontWeight.bold,
+                                  color: AppColors.textPrimary,
+                                  fontSize: 15,
+                                ),
+                              ),
+                              subtitle: Text(
+                                'Uploaded: $date',
+                                style: GoogleFonts.poppins(
+                                  fontSize: 11,
+                                  color: AppColors.textLight,
+                                ),
+                              ),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.open_in_new_rounded,
+                                      color: AppColors.primaryNavy,
                                     ),
-                                    child: const Icon(Icons.picture_as_pdf_outlined, color: AppColors.primaryNavy, size: 22),
+                                    onPressed: () => _openNote(context, note),
                                   ),
-                                  title: Text(
-                                    note['title'] ?? 'Untitled Document',
-                                    style: GoogleFonts.poppins(
-                                      fontWeight: FontWeight.bold,
-                                      color: AppColors.textPrimary,
-                                      fontSize: 15,
-                                    ),
-                                  ),
-                                  subtitle: Text(
-                                    'Uploaded: $date',
-                                    style: GoogleFonts.poppins(fontSize: 11, color: AppColors.textLight),
-                                  ),
-                                  trailing: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      IconButton(
-                                        icon: const Icon(Icons.open_in_new_rounded, color: AppColors.primaryNavy),
-                                        onPressed: () => _openNote(context, note),
+                                  if (widget.isTeacher)
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.delete_outline_rounded,
+                                        color: AppColors.accentRed,
                                       ),
-                                      if (widget.isTeacher)
-                                        IconButton(
-                                          icon: const Icon(Icons.delete_outline_rounded, color: AppColors.accentRed),
-                                          onPressed: () => _deleteNote(context, note['key'], fileUrl),
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                              );
-                            },
+                                      onPressed: () => _deleteNote(
+                                        context,
+                                        note['key'],
+                                        fileUrl,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
                           );
                         },
-                      ),
+                      );
+                    },
                   ),
+          ),
         ],
       ),
     );
@@ -2838,7 +3147,10 @@ class CommonClassSubjectsPage extends StatelessWidget {
         backgroundColor: Colors.transparent,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: AppColors.primaryNavy),
+          icon: const Icon(
+            Icons.arrow_back_ios_new_rounded,
+            color: AppColors.primaryNavy,
+          ),
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: Text(
@@ -2851,35 +3163,58 @@ class CommonClassSubjectsPage extends StatelessWidget {
         ),
       ),
       body: StreamBuilder<DatabaseEvent>(
-        stream: FirebaseDatabase.instance.ref().child('subjects').child(commonClassId).onValue,
+        stream: FirebaseDatabase.instance
+            .ref()
+            .child('subjects')
+            .child(commonClassId)
+            .onValue,
         builder: (context, subjectsSnapshot) {
           return StreamBuilder<DatabaseEvent>(
-            stream: FirebaseDatabase.instance.ref().child('recorded_classes').child(commonClassId).onValue,
+            stream: FirebaseDatabase.instance
+                .ref()
+                .child('recorded_classes')
+                .child(commonClassId)
+                .onValue,
             builder: (context, recordingsSnapshot) {
               if (subjectsSnapshot.connectionState == ConnectionState.waiting) {
                 return const Center(child: CircularProgressIndicator());
               }
 
               List<Map<String, dynamic>> subjectsList = [];
-              if (subjectsSnapshot.hasData && subjectsSnapshot.data!.snapshot.value != null) {
-                final map = Map<dynamic, dynamic>.from(subjectsSnapshot.data!.snapshot.value as Map);
-                final list = map.entries.map((e) => {
-                  'key': e.key,
-                  ...Map<String, dynamic>.from(e.value)
-                }).toList();
-                list.sort((a, b) => (a['name']?.toString() ?? '').compareTo(b['name']?.toString() ?? ''));
+              if (subjectsSnapshot.hasData &&
+                  subjectsSnapshot.data!.snapshot.value != null) {
+                final map = Map<dynamic, dynamic>.from(
+                  subjectsSnapshot.data!.snapshot.value as Map,
+                );
+                final list = map.entries
+                    .map(
+                      (e) => {
+                        'key': e.key,
+                        ...Map<String, dynamic>.from(e.value),
+                      },
+                    )
+                    .toList();
+                list.sort(
+                  (a, b) => (a['name']?.toString() ?? '').compareTo(
+                    b['name']?.toString() ?? '',
+                  ),
+                );
                 subjectsList.addAll(list);
               }
 
               List<Map<String, dynamic>> recordingsList = [];
-              if (recordingsSnapshot.hasData && recordingsSnapshot.data!.snapshot.value != null) {
-                final map = Map<dynamic, dynamic>.from(recordingsSnapshot.data!.snapshot.value as Map);
+              if (recordingsSnapshot.hasData &&
+                  recordingsSnapshot.data!.snapshot.value != null) {
+                final map = Map<dynamic, dynamic>.from(
+                  recordingsSnapshot.data!.snapshot.value as Map,
+                );
                 recordingsList = map.entries
                     .map((e) => Map<String, dynamic>.from(e.value))
                     .toList();
               }
 
-              final Map<String, List<Map<String, dynamic>>> groupedRecordings = {};
+              final Map<String, List<Map<String, dynamic>>> groupedRecordings =
+                  {};
               for (var rc in recordingsList) {
                 final subId = rc['subject_id']?.toString();
                 if (subId != null) {
@@ -2942,7 +3277,9 @@ class CommonClassSubjectsPage extends StatelessWidget {
                         border: Border.all(color: AppColors.divider),
                         boxShadow: [
                           BoxShadow(
-                            color: AppColors.primaryNavy.withValues(alpha: 0.02),
+                            color: AppColors.primaryNavy.withValues(
+                              alpha: 0.02,
+                            ),
                             blurRadius: 8,
                             offset: const Offset(0, 2),
                           ),

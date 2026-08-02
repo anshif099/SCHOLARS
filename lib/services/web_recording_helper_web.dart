@@ -1,7 +1,6 @@
 import 'dart:async';
-import 'dart:html' as html;
-import 'dart:typed_data';
 import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 import 'package:web/web.dart' as web;
 import 'package:dart_webrtc/dart_webrtc.dart';
 import 'package:dart_webrtc/src/media_stream_impl.dart';
@@ -10,8 +9,14 @@ import 'web_recording_helper.dart';
 WebRecordingHelper getHelper() => WebRecordingHelperImpl();
 
 class WebRecordingHelperImpl implements WebRecordingHelper {
-  final List<dynamic> _chunks = [];
-  dynamic _mediaRecorder;
+  static const int _videoBitsPerSecond = 500 * 1000;
+  static const int _audioBitsPerSecond = 64 * 1000;
+  static const int _chunkIntervalMs = 10000;
+
+  final List<web.Blob> _chunks = <web.Blob>[];
+  web.MediaRecorder? _nativeRecorder;
+  Completer<void>? _stopCompleter;
+  web.Blob? _recordedBlob;
   String _actualMimeType = 'video/webm';
 
   web.AudioContext? _audioContext;
@@ -20,6 +25,9 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
 
   @override
   String get recordedMimeType => _actualMimeType;
+
+  @override
+  int get recordedSizeBytes => _recordedBlob?.size ?? 0;
 
   String _getSupportedMimeType() {
     final types = [
@@ -32,7 +40,7 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
       'video/webm',
     ];
     for (final type in types) {
-      if (html.MediaRecorder.isTypeSupported(type)) {
+      if (web.MediaRecorder.isTypeSupported(type)) {
         return type;
       }
     }
@@ -46,7 +54,9 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
     List<dynamic>? remoteStreams,
   }) {
     _chunks.clear();
-    _mediaRecorder = mediaRecorder;
+    _recordedBlob = null;
+    _nativeRecorder = null;
+    _stopCompleter = Completer<void>();
     _sources.clear();
 
     final mimeType = _getSupportedMimeType();
@@ -65,7 +75,9 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
 
         // 2. Add local microphone to mixer
         if (localJsStream.getAudioTracks().toDart.isNotEmpty) {
-          final localSource = audioContext.createMediaStreamSource(localJsStream);
+          final localSource = audioContext.createMediaStreamSource(
+            localJsStream,
+          );
           localSource.connect(destination);
           _sources.add(localSource);
         }
@@ -77,7 +89,9 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
               final remoteJsStream = rs.jsStream;
               if (remoteJsStream.getAudioTracks().toDart.isNotEmpty) {
                 try {
-                  final remoteSource = audioContext.createMediaStreamSource(remoteJsStream);
+                  final remoteSource = audioContext.createMediaStreamSource(
+                    remoteJsStream,
+                  );
                   remoteSource.connect(destination);
                   _sources.add(remoteSource);
                 } catch (e) {
@@ -105,51 +119,73 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
         // Wrap the native mixed jsStream back to MediaStreamWeb
         final mixedStreamWeb = MediaStreamWeb(mixedJsStream, 'local');
 
-        mediaRecorder.startWeb(
-          mixedStreamWeb,
-          onDataChunk: (dynamic blob, bool isLastOne) {
-            if (blob != null) {
-              _chunks.add(blob);
-            }
-          },
-          mimeType: mimeType,
-          timeSlice: 1000,
-        );
+        _startNativeRecorder(mixedStreamWeb.jsStream, mimeType);
       } else {
         // Fallback to recording local stream only if stream is not MediaStreamWeb
-        mediaRecorder.startWeb(
-          stream,
-          onDataChunk: (dynamic blob, bool isLastOne) {
-            if (blob != null) {
-              _chunks.add(blob);
-            }
-          },
-          mimeType: mimeType,
-          timeSlice: 1000,
-        );
+        throw StateError('Web recording requires a MediaStreamWeb.');
       }
     } catch (e) {
       // ignore: avoid_print
       print('Error starting web recording with audio mixing: $e');
       // Fallback
       try {
-        mediaRecorder.startWeb(
-          stream,
-          onDataChunk: (dynamic blob, bool isLastOne) {
-            if (blob != null) {
-              _chunks.add(blob);
-            }
-          },
-          mimeType: mimeType,
-          timeSlice: 1000,
-        );
-      } catch (_) {}
+        if (stream is MediaStreamWeb) {
+          _startNativeRecorder(stream.jsStream, mimeType);
+        } else {
+          rethrow;
+        }
+      } catch (_) {
+        rethrow;
+      }
     }
+  }
+
+  void _startNativeRecorder(web.MediaStream stream, String mimeType) {
+    final recorder = web.MediaRecorder(
+      stream,
+      web.MediaRecorderOptions(
+        mimeType: mimeType,
+        videoBitsPerSecond: _videoBitsPerSecond,
+        audioBitsPerSecond: _audioBitsPerSecond,
+      ),
+    );
+    _nativeRecorder = recorder;
+
+    void onData(web.Event event) {
+      final data = event.getProperty<JSAny?>('data'.toJS);
+      if (data != null) {
+        final blob = data as web.Blob;
+        if (blob.size > 0) {
+          _chunks.add(blob);
+        }
+      }
+    }
+
+    void onStop(web.Event event) {
+      final completer = _stopCompleter;
+      if (completer != null && !completer.isCompleted) {
+        completer.complete();
+      }
+    }
+
+    void onError(web.Event event) {
+      final completer = _stopCompleter;
+      if (completer != null && !completer.isCompleted) {
+        completer.completeError('Browser MediaRecorder failed.');
+      }
+    }
+
+    recorder.addEventListener('dataavailable', onData.toJS);
+    recorder.addEventListener('stop', onStop.toJS);
+    recorder.addEventListener('error', onError.toJS);
+    recorder.start(_chunkIntervalMs);
   }
 
   @override
   void addRemoteStream(dynamic stream) {
-    if (_audioContext != null && _destination != null && stream is MediaStreamWeb) {
+    if (_audioContext != null &&
+        _destination != null &&
+        stream is MediaStreamWeb) {
       final remoteJsStream = stream.jsStream;
       if (remoteJsStream.getAudioTracks().toDart.isNotEmpty) {
         try {
@@ -165,11 +201,15 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
   }
 
   @override
-  Future<Uint8List?> stop() async {
-    if (_mediaRecorder == null) return null;
+  Future<dynamic> stop() async {
+    final recorder = _nativeRecorder;
+    if (recorder == null) return null;
 
     try {
-      await _mediaRecorder.stop();
+      if (recorder.state != 'inactive') {
+        recorder.stop();
+      }
+      await _stopCompleter?.future.timeout(const Duration(seconds: 20));
     } catch (e) {
       // ignore: avoid_print
       print('Error stopping web media recorder: $e');
@@ -190,36 +230,24 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
       _audioContext = null;
     }
     _destination = null;
+    _nativeRecorder = null;
 
     if (_chunks.isEmpty) return null;
 
-    final completer = Completer<Uint8List?>();
     try {
-      final finalBlob = html.Blob(_chunks, _actualMimeType);
-      final reader = html.FileReader();
-
-      reader.onLoadEnd.listen((e) {
-        final result = reader.result;
-        if (result is Uint8List) {
-          completer.complete(result);
-        } else if (result is ByteBuffer) {
-          completer.complete(result.asUint8List());
-        } else {
-          completer.complete(null);
-        }
-      });
-
-      reader.onError.listen((e) {
-        completer.completeError('Error reading recorded chunks: ${reader.error}');
-      });
-
-      reader.readAsArrayBuffer(finalBlob);
+      // Keep the result as a browser Blob. Converting a long video to
+      // Uint8List duplicates the complete recording in memory and can crash
+      // mobile Safari while the class is ending.
+      _recordedBlob = web.Blob(
+        _chunks.toJS,
+        web.BlobPropertyBag(type: _actualMimeType),
+      );
+      _chunks.clear();
+      return _recordedBlob;
     } catch (e) {
       // ignore: avoid_print
-      print('Error converting chunks to bytes: $e');
-      completer.complete(null);
+      print('Error finalizing recorded chunks: $e');
+      return null;
     }
-
-    return completer.future;
   }
 }

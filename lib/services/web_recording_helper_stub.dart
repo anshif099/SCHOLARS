@@ -1,4 +1,3 @@
-import 'dart:typed_data';
 import 'web_recording_helper.dart';
 
 WebRecordingHelper getHelper() => StubWebRecordingHelper();
@@ -6,6 +5,9 @@ WebRecordingHelper getHelper() => StubWebRecordingHelper();
 class StubWebRecordingHelper implements WebRecordingHelper {
   @override
   String get recordedMimeType => 'video/mp4';
+
+  @override
+  int get recordedSizeBytes => 0;
 
   @override
   void start(
@@ -22,7 +24,7 @@ class StubWebRecordingHelper implements WebRecordingHelper {
   }
 
   @override
-  Future<Uint8List?> stop() async {
+  Future<dynamic> stop() async {
     return null;
   }
 }
