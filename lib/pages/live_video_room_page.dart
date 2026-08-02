@@ -2538,9 +2538,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
             children: [
               Positioned.fill(
                 child: GestureDetector(
-                  onTap: () => setState(
-                    () => _showOwnCameraSmall = !_showOwnCameraSmall,
-                  ),
+                  onTap: widget.isTeacher
+                      ? () => setState(
+                          () => _showOwnCameraSmall = !_showOwnCameraSmall,
+                        )
+                      : null,
                   child: Container(
                     color: const Color(0xFF1C1C1E),
                     child: _buildMainVideoPanel(),
@@ -2648,9 +2650,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                             MediaQuery.of(context).size.width / 2;
                       });
                     },
-                    onTap: () => setState(
-                      () => _showOwnCameraSmall = !_showOwnCameraSmall,
-                    ),
+                    onTap: widget.isTeacher
+                        ? () => setState(
+                            () => _showOwnCameraSmall = !_showOwnCameraSmall,
+                          )
+                        : null,
                     child: Container(
                       width: 120,
                       height: 180,
@@ -2882,6 +2886,22 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
 
     if (_sharedDocUrl != null) {
       return _buildSharedWhiteboardPanel();
+    }
+
+    // A student must always see the teacher in the full main area. Other
+    // students never push the teacher into a grid or the small self-view.
+    if (!widget.isTeacher) {
+      final teacherRenderer = _remoteRenderers[_localParticipantId];
+      if (teacherRenderer?.srcObject != null) {
+        return ColoredBox(
+          color: Colors.black,
+          child: RTCVideoView(
+            teacherRenderer!,
+            objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+          ),
+        );
+      }
+      return _buildRemotePlaceholder();
     }
 
     final showLocalInMain = !_showOwnCameraSmall;
@@ -3748,7 +3768,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       return null;
     }
 
-    final showLocalInPip = _showOwnCameraSmall;
+    final showLocalInPip = !widget.isTeacher || _showOwnCameraSmall;
 
     if (showLocalInPip) {
       return _buildLocalVideoView(expanded: false);
@@ -3775,7 +3795,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
 
     if (connectedRenderers.length == 1) {
       final focusedEntry = _focusedRemoteEntry ?? connectedRenderers.first;
-      return RTCVideoView(focusedEntry.value);
+      return RTCVideoView(
+        focusedEntry.value,
+        objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+      );
     }
 
     return LayoutBuilder(
@@ -3801,7 +3824,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                   children: [
                     Container(
                       color: const Color(0xFF111111),
-                      child: RTCVideoView(entry.value),
+                      child: RTCVideoView(
+                        entry.value,
+                        objectFit:
+                            RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                      ),
                     ),
                     Positioned(
                       left: 8,
@@ -3848,7 +3875,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       );
     }
 
-    return RTCVideoView(focusedEntry.value);
+    return RTCVideoView(
+      focusedEntry.value,
+      objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+    );
   }
 
   MapEntry<String, RTCVideoRenderer>? get _focusedRemoteEntry {
