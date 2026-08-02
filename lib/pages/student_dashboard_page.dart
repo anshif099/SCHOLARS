@@ -145,8 +145,8 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
     _sessionHeartbeat?.cancel();
     _sessionHeartbeat = null;
 
-    await CallNotificationService.deactivateStudentSession();
     await StudentSessionService.clearLocalSession();
+    _deactivateStudentNotificationsInBackground();
     if (!mounted) return;
 
     await showDialog<void>(
@@ -368,7 +368,6 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
     try {
       // Release the server lock before removing the local login.
       await StudentSessionService.releaseCurrentSession();
-      await CallNotificationService.deactivateStudentSession();
     } catch (error) {
       debugPrint('Student logout failed: $error');
       _isEndingStudentSession = false;
@@ -387,12 +386,26 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
       return;
     }
 
+    // Notification cleanup is secondary and must never hold the user on the
+    // dashboard after the server session has already been released.
+    _deactivateStudentNotificationsInBackground();
+
     if (mounted) {
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const LandingPage()),
         (route) => false,
       );
     }
+  }
+
+  void _deactivateStudentNotificationsInBackground() {
+    unawaited(
+      CallNotificationService.deactivateStudentSession()
+          .timeout(const Duration(seconds: 5))
+          .catchError((Object error, StackTrace stackTrace) {
+        debugPrint('Student notification cleanup skipped: $error');
+      }),
+    );
   }
 
   void _showStudentProfile() {
