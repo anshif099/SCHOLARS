@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:crypto/crypto.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
@@ -9,6 +12,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import 'firebase_upload_auth_service.dart';
+
+String _sessionTokenHash(String token) {
+  if (token.isEmpty) return '';
+  return sha256.convert(utf8.encode(token)).toString();
+}
 
 class StudentSessionException implements Exception {
   final String message;
@@ -21,7 +29,7 @@ class StudentSessionException implements Exception {
 
 class StudentActiveSession {
   final String authUid;
-  final String sessionToken;
+  final String sessionTokenHash;
   final String deviceId;
   final String deviceName;
   final String deviceType;
@@ -32,7 +40,7 @@ class StudentActiveSession {
 
   const StudentActiveSession({
     required this.authUid,
-    required this.sessionToken,
+    required this.sessionTokenHash,
     required this.deviceId,
     required this.deviceName,
     required this.deviceType,
@@ -54,7 +62,9 @@ class StudentActiveSession {
 
     return StudentActiveSession(
       authUid: data['auth_uid']?.toString() ?? '',
-      sessionToken: data['session_token']?.toString() ?? '',
+      sessionTokenHash:
+          data['session_token_hash']?.toString() ??
+          _sessionTokenHash(data['session_token']?.toString() ?? ''),
       deviceId: data['device_id']?.toString() ?? '',
       deviceName: data['device_name']?.toString() ?? 'Unknown device',
       deviceType: data['device_type']?.toString() ?? 'Unknown',
@@ -134,7 +144,7 @@ class StudentSessionService {
 
           return Transaction.success(<String, Object>{
             'auth_uid': uid,
-            'session_token': sessionToken,
+            'session_token_hash': _sessionTokenHash(sessionToken),
             'device_id': deviceId,
             'device_name': device.name,
             'device_type': device.type,
@@ -213,6 +223,10 @@ class StudentSessionService {
           }
 
           final current = Map<dynamic, dynamic>.from(currentValue! as Map);
+          current.remove('session_token');
+          current['session_token_hash'] = _sessionTokenHash(
+            identity.sessionToken,
+          );
           current['last_active'] = DateTime.now().millisecondsSinceEpoch;
           return Transaction.success(current);
         }, applyLocally: false)
@@ -224,16 +238,54 @@ class StudentSessionService {
   static Future<void> releaseCurrentSession() async {
     final prefs = await SharedPreferences.getInstance();
     final studentKey = prefs.getString(_sessionStudentKey);
-    final identity = studentKey == null
-        ? null
-        : await _loadLocalIdentity(studentKey);
+    final sessionToken = prefs.getString(_sessionTokenKey);
+    final deviceId = prefs.getString(_deviceIdKey);
+    if (studentKey == null ||
+        studentKey.isEmpty ||
+        sessionToken == null ||
+        sessionToken.isEmpty ||
+        deviceId == null ||
+        deviceId.isEmpty) {
+      throw const StudentSessionException(
+        'This device is missing its secure logout details. Please contact support to reset the session.',
+      );
+    }
 
-    if (studentKey != null && identity != null) {
+    Object? serverError;
+    try {
+      final callable = FirebaseFunctions.instance.httpsCallable(
+        'releaseStudentSession',
+        options: HttpsCallableOptions(timeout: const Duration(seconds: 20)),
+      );
+      final response = await callable.call(<String, String>{
+        'studentKey': studentKey,
+        'sessionToken': sessionToken,
+        'deviceId': deviceId,
+      });
+      final data = response.data;
+      if (data is Map && data['released'] == true) {
+        await clearLocalSession();
+        return;
+      }
+      serverError = const StudentSessionException(
+        'The server could not release this device session.',
+      );
+    } catch (error) {
+      serverError = error;
+      debugPrint('Server-backed student session release failed: $error');
+    }
+
+    // Keep direct release as a safe fallback during the Cloud Function rollout.
+    final identity = await _loadLocalIdentity(studentKey);
+    if (identity != null) {
       try {
         final ref = _sessionRef(studentKey);
         await ref.get().timeout(const Duration(seconds: 15));
-        await ref
+        final result = await ref
             .runTransaction((currentValue) {
+              if (currentValue == null) {
+                return Transaction.success(null);
+              }
               final session = StudentActiveSession.fromValue(currentValue);
               if (!_isOwned(session, identity)) {
                 return Transaction.abort();
@@ -242,13 +294,19 @@ class StudentSessionService {
               return Transaction.success(null);
             }, applyLocally: false)
             .timeout(const Duration(seconds: 15));
+        if (result.committed || !result.snapshot.exists) {
+          await clearLocalSession();
+          return;
+        }
       } catch (error) {
-        debugPrint('Student session release failed: $error');
-        rethrow;
+        debugPrint('Direct student session release failed: $error');
+        serverError = error;
       }
     }
 
-    await clearLocalSession();
+    throw StudentSessionException(
+      'Could not release this device session. Check the internet connection and try again. (${serverError.runtimeType})',
+    );
   }
 
   static Future<void> clearLocalSession() async {
@@ -266,7 +324,7 @@ class StudentSessionService {
     return session.authUid.isNotEmpty &&
         session.authUid == identity.authUid &&
         session.deviceId == identity.deviceId &&
-        session.sessionToken == identity.sessionToken;
+        session.sessionTokenHash == _sessionTokenHash(identity.sessionToken);
   }
 
   static Future<_LocalSessionIdentity?> _loadLocalIdentity(

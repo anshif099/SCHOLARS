@@ -1,10 +1,91 @@
 const admin = require("firebase-admin");
 const functions = require("firebase-functions/v1");
+const crypto = require("node:crypto");
 
 admin.initializeApp();
 
 const CALL_TYPE = "incoming_class_call";
 const MAX_MULTICAST_TOKENS = 500;
+
+function sha256(value) {
+  return crypto.createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function secureHashEquals(left, right) {
+  if (typeof left !== "string" || typeof right !== "string") {
+    return false;
+  }
+  const leftBuffer = Buffer.from(left, "hex");
+  const rightBuffer = Buffer.from(right, "hex");
+  return (
+    leftBuffer.length === 32 &&
+    rightBuffer.length === 32 &&
+    crypto.timingSafeEqual(leftBuffer, rightBuffer)
+  );
+}
+
+exports.releaseStudentSession = functions.https.onCall(async (data) => {
+  const studentKey =
+    typeof data?.studentKey === "string" ? data.studentKey.trim() : "";
+  const sessionToken =
+    typeof data?.sessionToken === "string" ? data.sessionToken.trim() : "";
+  const deviceId =
+    typeof data?.deviceId === "string" ? data.deviceId.trim() : "";
+
+  if (
+    !studentKey ||
+    !sessionToken ||
+    !deviceId ||
+    studentKey.length > 128 ||
+    sessionToken.length > 128 ||
+    deviceId.length > 128 ||
+    [".", "#", "$", "[", "]", "/"].some((char) =>
+      studentKey.includes(char)
+    )
+  ) {
+    throw new functions.https.HttpsError(
+      "invalid-argument",
+      "Valid student session details are required."
+    );
+  }
+
+  const suppliedTokenHash = sha256(sessionToken);
+  const sessionRef = admin.database().ref(`student_sessions/${studentKey}`);
+  const result = await sessionRef.transaction(
+    (current) => {
+      if (!current) {
+        return current;
+      }
+
+      // session_token is accepted only to migrate locks created by app v2.3.8.
+      const storedTokenHash =
+        typeof current.session_token_hash === "string"
+          ? current.session_token_hash
+          : typeof current.session_token === "string"
+            ? sha256(current.session_token)
+            : "";
+      const ownsSession =
+        current.device_id === deviceId &&
+        secureHashEquals(storedTokenHash, suppliedTokenHash);
+      if (!ownsSession) {
+        return undefined;
+      }
+
+      return null;
+    },
+    undefined,
+    false
+  );
+
+  if (result.snapshot.exists()) {
+    throw new functions.https.HttpsError(
+      "permission-denied",
+      "This device does not own the active student session."
+    );
+  }
+
+  return { released: true };
+});
 
 exports.notifyStudentsOnLiveClassStart = functions.database
   .ref("/live_classes/{classId}")

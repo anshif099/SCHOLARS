@@ -31,7 +31,7 @@
     "student_sessions": {
       "$studentId": {
         ".write": "auth != null && ((!data.exists() && newData.exists() && root.child('students').child($studentId).exists() && newData.child('auth_uid').val() === auth.uid) || (data.exists() && data.child('auth_uid').val() === auth.uid && (!newData.exists() || newData.child('auth_uid').val() === auth.uid)))",
-        ".validate": "!newData.exists() || (newData.hasChildren(['auth_uid', 'session_token', 'device_id', 'device_name', 'device_type', 'platform', 'app_version', 'login_at', 'last_active']) && newData.child('auth_uid').isString() && newData.child('session_token').isString() && newData.child('device_id').isString() && newData.child('device_name').isString() && newData.child('device_type').isString() && newData.child('platform').isString() && newData.child('app_version').isString() && newData.child('login_at').isNumber() && newData.child('last_active').isNumber())"
+        ".validate": "!newData.exists() || (newData.hasChildren(['auth_uid', 'device_id', 'device_name', 'device_type', 'platform', 'app_version', 'login_at', 'last_active']) && newData.child('auth_uid').isString() && ((newData.child('session_token_hash').isString() && newData.child('session_token_hash').val().length === 64) || newData.child('session_token').isString()) && newData.child('device_id').isString() && newData.child('device_name').isString() && newData.child('device_type').isString() && newData.child('platform').isString() && newData.child('app_version').isString() && newData.child('login_at').isNumber() && newData.child('last_active').isNumber())"
       }
     }
   }
