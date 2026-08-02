@@ -20,6 +20,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'note_image_viewer_page.dart';
 import '../components/fresh_stream_builder.dart';
 import '../components/universal_image.dart';
+import '../components/camera_mic_access_dialog.dart';
 
 bool _isRecordingUploadPending(Map recording) {
   final status = recording['upload_status']?.toString();
@@ -1699,27 +1700,47 @@ class _TeacherDashboardPageState extends State<TeacherDashboardPage> {
                 child: ElevatedButton.icon(
                   onPressed: hasSubjects
                       ? () async {
+                          final access = await requestCameraMicAccessForCall(
+                            context,
+                          );
+                          if (access == null) {
+                            return;
+                          }
+                          if (!context.mounted) {
+                            PermissionService.stopPreparedStream(
+                              access.preparedStream,
+                            );
+                            return;
+                          }
+
                           final topic = _topicController.text.trim().isEmpty
                               ? 'General Class'
                               : _topicController.text.trim();
 
-                          // Signal live class
-                          await FirebaseDatabase.instance
-                              .ref()
-                              .child('live_classes')
-                              .child(classId)
-                              .set({
-                                'is_live': false,
-                                'topic': topic,
-                                'subject_id': _selectedSubjectId,
-                                'teacher_name': widget.teacherData['name'],
-                                'started_at':
-                                    DateTime.now().millisecondsSinceEpoch,
-                                'status': 'preparing',
-                              });
+                          try {
+                            // Signal the class only after media access succeeds.
+                            await FirebaseDatabase.instance
+                                .ref()
+                                .child('live_classes')
+                                .child(classId)
+                                .set({
+                                  'is_live': false,
+                                  'topic': topic,
+                                  'subject_id': _selectedSubjectId,
+                                  'teacher_name': widget.teacherData['name'],
+                                  'started_at':
+                                      DateTime.now().millisecondsSinceEpoch,
+                                  'status': 'preparing',
+                                });
 
-                          if (mounted) {
-                            Navigator.of(context).push(
+                            if (!context.mounted) {
+                              PermissionService.stopPreparedStream(
+                                access.preparedStream,
+                              );
+                              return;
+                            }
+
+                            await Navigator.of(context).push(
                               MaterialPageRoute(
                                 builder: (_) => LiveVideoRoomPage(
                                   isTeacher: true,
@@ -1730,9 +1751,23 @@ class _TeacherDashboardPageState extends State<TeacherDashboardPage> {
                                       ?.toString(),
                                   participantName: widget.teacherData['name']
                                       ?.toString(),
+                                  initialLocalStream: access.preparedStream,
                                 ),
                               ),
                             );
+                          } catch (error) {
+                            PermissionService.stopPreparedStream(
+                              access.preparedStream,
+                            );
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'Could not start the live class. Please try again.',
+                                  ),
+                                ),
+                              );
+                            }
                           }
                         }
                       : null,

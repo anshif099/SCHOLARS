@@ -21,6 +21,7 @@ import 'note_image_viewer_page.dart';
 import '../services/firebase_upload_auth_service.dart';
 import '../components/fresh_stream_builder.dart';
 import '../components/universal_image.dart';
+import '../components/camera_mic_access_dialog.dart';
 
 bool _isRecordingUploadPending(Map recording) {
   final status = recording['upload_status']?.toString();
@@ -63,6 +64,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   Timer? _sessionHeartbeat;
   bool _isEndingStudentSession = false;
   bool _isLoggingOut = false;
+  bool _isJoiningLiveCall = false;
 
   bool _isStudentTargeted(Map<dynamic, dynamic> commonClass) {
     final targetType = commonClass['target_type']?.toString();
@@ -587,31 +589,43 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   }
 
   Future<void> _joinCall(String classId, String topic) async {
-    bool granted = await PermissionService.requestCameraAndMic();
-    if (granted) {
-      if (mounted) {
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => LiveVideoRoomPage(
-              isTeacher: false,
-              classId: classId,
-              topic: topic,
-              participantId: widget.studentData['key']?.toString(),
-              participantName: widget.studentData['name']?.toString(),
-            ),
-          ),
-        );
+    if (_isJoiningLiveCall) {
+      return;
+    }
+
+    _isJoiningLiveCall = true;
+    try {
+      final access = await requestCameraMicAccessForCall(context);
+      if (access == null) {
+        return;
       }
-    } else {
+      if (!mounted) {
+        PermissionService.stopPreparedStream(access.preparedStream);
+        return;
+      }
+
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => LiveVideoRoomPage(
+            isTeacher: false,
+            classId: classId,
+            topic: topic,
+            participantId: widget.studentData['key']?.toString(),
+            participantName: widget.studentData['name']?.toString(),
+            initialLocalStream: access.preparedStream,
+          ),
+        ),
+      );
+    } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text(
-              'Camera and Microphone permissions are required to join the class.',
-            ),
+            content: Text('Could not join the live class. Please try again.'),
           ),
         );
       }
+    } finally {
+      _isJoiningLiveCall = false;
     }
   }
 
@@ -1653,24 +1667,11 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                             snapshot.value as Map,
                           );
                           if (data['is_live'] == true) {
-                            bool granted =
-                                await PermissionService.requestCameraAndMic();
-                            if (granted && mounted) {
-                              Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (_) => LiveVideoRoomPage(
-                                    isTeacher: false,
-                                    classId: classId,
-                                    topic: data['topic'] ?? 'Live Class',
-                                    participantId: widget.studentData['key']
-                                        ?.toString(),
-                                    participantName: widget.studentData['name']
-                                        ?.toString(),
-                                  ),
-                                ),
-                              );
-                              return;
-                            }
+                            await _joinCall(
+                              classId.toString(),
+                              data['topic']?.toString() ?? 'Live Class',
+                            );
+                            return;
                           }
                         }
                         _showNoLiveClass();

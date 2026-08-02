@@ -32,6 +32,7 @@ class LiveVideoRoomPage extends StatefulWidget {
   final String? subjectId;
   final String? participantId;
   final String? participantName;
+  final MediaStream? initialLocalStream;
 
   const LiveVideoRoomPage({
     super.key,
@@ -41,6 +42,7 @@ class LiveVideoRoomPage extends StatefulWidget {
     this.subjectId,
     this.participantId,
     this.participantName,
+    this.initialLocalStream,
   });
 
   @override
@@ -237,6 +239,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     _localParticipantName = _buildLocalParticipantName();
     _connectionId = _buildConnectionId();
     _callStartedAt = DateTime.now();
+    _localStream = widget.initialLocalStream;
     _statusMessage = widget.isTeacher
         ? 'Preparing your classroom...'
         : 'Joining ${widget.topic}...';
@@ -326,7 +329,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       await _localRenderer.initialize();
       _renderersInitialized = true;
 
-      final granted = await PermissionService.requestCameraAndMic();
+      final granted =
+          _localStream != null || await PermissionService.requestCameraAndMic();
       if (!granted) {
         await _failAndClose('Camera and microphone permissions are required.');
         return;
@@ -376,8 +380,27 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         });
       }
     } catch (error) {
-      await _failAndClose('Unable to start the live call: $error');
+      await _failAndClose(_friendlyCallStartError(error));
     }
+  }
+
+  String _friendlyCallStartError(Object error) {
+    final normalized = error.toString().toLowerCase();
+    if (normalized.contains('notallowederror') ||
+        normalized.contains('permission') ||
+        normalized.contains('denied')) {
+      return 'Camera or microphone access is blocked. Allow both permissions and try again.';
+    }
+    if (normalized.contains('notfounderror') ||
+        normalized.contains('devicesnotfound') ||
+        normalized.contains('no camera')) {
+      return 'No available camera or microphone was found on this device.';
+    }
+    if (normalized.contains('notreadableerror') ||
+        normalized.contains('trackstarterror')) {
+      return 'The camera or microphone is being used by another app. Close it and try again.';
+    }
+    return 'Unable to start the live class. Please check your connection and try again.';
   }
 
   Future<void> _registerParticipant() async {
@@ -496,7 +519,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
             },
           };
 
-    _localStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
+    _localStream ??= await navigator.mediaDevices.getUserMedia(
+      mediaConstraints,
+    );
     _localAudioTrack = _localStream!.getAudioTracks().isNotEmpty
         ? _localStream!.getAudioTracks().first
         : null;
