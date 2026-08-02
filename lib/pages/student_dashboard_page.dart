@@ -43,6 +43,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   StreamSubscription<bool>? _studentSessionSub;
   Timer? _sessionHeartbeat;
   bool _isEndingStudentSession = false;
+  bool _isLoggingOut = false;
 
   bool _isStudentTargeted(Map<dynamic, dynamic> commonClass) {
     final targetType = commonClass['target_type']?.toString();
@@ -360,6 +361,9 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   Future<void> _logoutStudent() async {
     if (_isEndingStudentSession) return;
     _isEndingStudentSession = true;
+    if (mounted) {
+      setState(() => _isLoggingOut = true);
+    }
     await _studentSessionSub?.cancel();
     _studentSessionSub = null;
     _sessionHeartbeat?.cancel();
@@ -371,6 +375,9 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
     } catch (error) {
       debugPrint('Student logout failed: $error');
       _isEndingStudentSession = false;
+      if (mounted) {
+        setState(() => _isLoggingOut = false);
+      }
       _startStudentSessionGuard();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -704,31 +711,104 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   Widget build(BuildContext context) {
     final bool isKeyboardVisible = MediaQuery.of(context).viewInsets.bottom > 0;
 
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: Stack(
-        children: [
-          SafeArea(
-            child: Column(
-              children: [
-                _buildTopBar(),
-                Expanded(
-                  child: _selectedIndex == 0
-                      ? _buildDashboardContent()
-                      : const Center(child: Text('Coming Soon')),
-                ),
-              ],
+    return PopScope(
+      canPop: !_isLoggingOut,
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        body: Stack(
+          children: [
+            SafeArea(
+              child: Column(
+                children: [
+                  _buildTopBar(),
+                  Expanded(
+                    child: _selectedIndex == 0
+                        ? _buildDashboardContent()
+                        : const Center(child: Text('Coming Soon')),
+                  ),
+                ],
+              ),
+            ),
+            // Glassmorphism Bottom Bar
+            if (!isKeyboardVisible)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 30,
+                child: SafeArea(child: _buildFloatingBottomBar()),
+              ),
+            if (_isLoggingOut) _buildLogoutOverlay(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLogoutOverlay() {
+    return Positioned.fill(
+      child: Material(
+        color: AppColors.primaryNavy.withValues(alpha: 0.48),
+        child: Center(
+          child: TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0, end: 1),
+            duration: const Duration(milliseconds: 220),
+            builder: (context, value, child) => Opacity(
+              opacity: value,
+              child: Transform.scale(
+                scale: 0.92 + (0.08 * value),
+                child: child,
+              ),
+            ),
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 340),
+              margin: const EdgeInsets.symmetric(horizontal: 32),
+              padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 28),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(22),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.18),
+                    blurRadius: 28,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(
+                    width: 42,
+                    height: 42,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 3.5,
+                      color: AppColors.accentRed,
+                    ),
+                  ),
+                  const SizedBox(height: 22),
+                  Text(
+                    'Logging out...',
+                    style: GoogleFonts.poppins(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.primaryNavy,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Please wait while we securely end this device session.',
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.poppins(
+                      fontSize: 13,
+                      height: 1.5,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-          // Glassmorphism Bottom Bar
-          if (!isKeyboardVisible)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 30,
-              child: SafeArea(child: _buildFloatingBottomBar()),
-            ),
-        ],
+        ),
       ),
     );
   }
