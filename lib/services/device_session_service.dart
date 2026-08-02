@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io' show Platform;
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -29,21 +28,31 @@ class DeviceSessionService {
       platformName = 'Web';
       deviceName = 'Web Browser';
     } else {
-      if (Platform.isAndroid) {
-        platformName = 'Android';
-        deviceName = 'Android Device';
-      } else if (Platform.isIOS) {
-        platformName = 'iOS';
-        deviceName = 'iPhone / iPad';
-      } else if (Platform.isWindows) {
-        platformName = 'Windows';
-        deviceName = 'Windows PC';
-      } else if (Platform.isMacOS) {
-        platformName = 'macOS';
-        deviceName = 'Mac';
-      } else if (Platform.isLinux) {
-        platformName = 'Linux';
-        deviceName = 'Linux PC';
+      switch (defaultTargetPlatform) {
+        case TargetPlatform.android:
+          platformName = 'Android';
+          deviceName = 'Android Mobile App';
+          break;
+        case TargetPlatform.iOS:
+          platformName = 'iOS';
+          deviceName = 'iPhone / iPad';
+          break;
+        case TargetPlatform.windows:
+          platformName = 'Windows';
+          deviceName = 'Windows PC';
+          break;
+        case TargetPlatform.macOS:
+          platformName = 'macOS';
+          deviceName = 'Mac';
+          break;
+        case TargetPlatform.linux:
+          platformName = 'Linux';
+          deviceName = 'Linux PC';
+          break;
+        default:
+          platformName = 'Mobile/Desktop';
+          deviceName = 'Other Device';
+          break;
       }
     }
 
