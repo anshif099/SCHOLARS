@@ -469,14 +469,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
 
         if (widget.isTeacher) {
           unawaited(_syncTeacherStudentPeers(participants));
-          if (_hasRemoteParticipant &&
-              !_isRecording &&
-              !_isSavingRecording &&
-              _mediaRecorder == null &&
-              _localVideoPath == null &&
-              !_isVideoOff) {
-            unawaited(_startRecording());
-          }
         } else {
           unawaited(_syncStudentStudentPeers(participants));
         }
