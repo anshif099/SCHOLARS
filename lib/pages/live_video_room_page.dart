@@ -10,7 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter_pdfview/flutter_pdfview.dart';
+import 'package:pdfrx/pdfrx.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:path_provider/path_provider.dart';
@@ -143,34 +143,24 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   String? _sharedDocName;
   String? _sharedDocType;
   int _sharedDocPage = 1;
-  String? _localPdfPath;
-  bool _isDownloadingPdf = false;
+  int _sharedDocPageCount = 0;
+  int _pdfReloadNonce = 0;
+  PdfDocumentRef? _sharedPdfDocumentRef;
+  final TransformationController _documentTransformationController =
+      TransformationController();
+  double _documentZoom = 1.0;
+  bool _isDocumentFullScreen = false;
+  Future<void> _pdfPageSyncTask = Future<void>.value();
   bool _isDrawingMode = false;
   Color _selectedDrawColor = Colors.red;
   double _selectedDrawWidth = 4.0;
-  PDFViewController? _pdfController;
   int _lastSyncTime = 0;
   List<Offset> _activePoints = [];
   PlatformFile? _localSharedFile;
   bool _showWhiteboardToolbar = true;
   final GlobalKey _canvasKey = GlobalKey();
-  double _imageAspectRatio = 16 / 9;
-
-  void _resolveImageAspectRatio(ImageProvider provider) {
-    final ImageStream stream = provider.resolve(const ImageConfiguration());
-    ImageStreamListener? listener;
-    listener = ImageStreamListener((ImageInfo info, bool syncCall) {
-      if (mounted) {
-        setState(() {
-          _imageAspectRatio = info.image.width / info.image.height;
-        });
-      }
-      if (listener != null) {
-        stream.removeListener(listener);
-      }
-    });
-    stream.addListener(listener);
-  }
+  bool get _isStudentDocumentFullScreen =>
+      !widget.isTeacher && _sharedDocUrl != null && _isDocumentFullScreen;
 
   DatabaseReference get _liveClassRef => FirebaseDatabase.instance
       .ref()
@@ -2616,6 +2606,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     _drawingStrokesSub?.cancel();
     _currentStrokeSub?.cancel();
     _sharedDocumentSub?.cancel();
+    _documentTransformationController.dispose();
     if (!_hasEndedCall) {
       unawaited(_cleanupRoomState(removeLiveClass: widget.isTeacher));
       // Cleanup can wait on a lost network. The connection-specific database
@@ -2627,6 +2618,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
 
   @override
   Widget build(BuildContext context) {
+    final hideLiveChrome = _isStudentDocumentFullScreen;
     return PopScope<void>(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
@@ -2653,71 +2645,15 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                   ),
                 ),
               ),
-              Positioned(
-                top: 20,
-                left: 20,
-                right: 20,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.5),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            width: 8,
-                            height: 8,
-                            decoration: const BoxDecoration(
-                              color: Colors.redAccent,
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            'LIVE',
-                            style: GoogleFonts.poppins(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12,
-                            ),
-                          ),
-                          if (_isRecording) ...[
-                            const SizedBox(width: 8),
-                            Container(
-                              width: 1,
-                              height: 12,
-                              color: Colors.white24,
-                            ),
-                            const SizedBox(width: 8),
-                            const Icon(
-                              Icons.fiber_manual_record,
-                              color: Colors.red,
-                              size: 14,
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              'REC ${_formattedRecordingTime()}',
-                              style: GoogleFonts.poppins(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                    Expanded(
-                      child: Container(
-                        margin: const EdgeInsets.only(left: 12),
+              if (!hideLiveChrome)
+                Positioned(
+                  top: 20,
+                  left: 20,
+                  right: 20,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 16,
                           vertical: 8,
@@ -2726,22 +2662,79 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                           color: Colors.black.withValues(alpha: 0.5),
                           borderRadius: BorderRadius.circular(20),
                         ),
-                        child: Text(
-                          widget.topic,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: GoogleFonts.poppins(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w500,
-                            fontSize: 14,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: const BoxDecoration(
+                                color: Colors.redAccent,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'LIVE',
+                              style: GoogleFonts.poppins(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
+                              ),
+                            ),
+                            if (_isRecording) ...[
+                              const SizedBox(width: 8),
+                              Container(
+                                width: 1,
+                                height: 12,
+                                color: Colors.white24,
+                              ),
+                              const SizedBox(width: 8),
+                              const Icon(
+                                Icons.fiber_manual_record,
+                                color: Colors.red,
+                                size: 14,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                'REC ${_formattedRecordingTime()}',
+                                style: GoogleFonts.poppins(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      Expanded(
+                        child: Container(
+                          margin: const EdgeInsets.only(left: 12),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.5),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            widget.topic,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: GoogleFonts.poppins(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w500,
+                              fontSize: 14,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              if (_buildPipContent() != null)
+              if (!hideLiveChrome && _buildPipContent() != null)
                 Positioned(
                   bottom: 120,
                   right: _isPipOnRight ? 20 : null,
@@ -2780,62 +2773,63 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                     ),
                   ),
                 ),
-              Positioned(
-                top: 80,
-                right: 20,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    if (_localVideoTrack != null)
-                      GestureDetector(
-                        onTap: () => unawaited(_switchCamera()),
-                        child: Container(
-                          margin: const EdgeInsets.only(bottom: 12),
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.6),
-                            shape: BoxShape.circle,
-                            border: Border.all(color: Colors.white12),
-                          ),
-                          child: const Icon(
-                            Icons.flip_camera_ios_rounded,
-                            color: Colors.white,
-                            size: 24,
-                          ),
-                        ),
-                      ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black45,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(
-                            Icons.people_rounded,
-                            color: Colors.white70,
-                            size: 14,
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            '${_participants.length} Active',
-                            style: GoogleFonts.poppins(
-                              color: Colors.white70,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w500,
+              if (!hideLiveChrome)
+                Positioned(
+                  top: 80,
+                  right: 20,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      if (_localVideoTrack != null)
+                        GestureDetector(
+                          onTap: () => unawaited(_switchCamera()),
+                          child: Container(
+                            margin: const EdgeInsets.only(bottom: 12),
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.6),
+                              shape: BoxShape.circle,
+                              border: Border.all(color: Colors.white12),
+                            ),
+                            child: const Icon(
+                              Icons.flip_camera_ios_rounded,
+                              color: Colors.white,
+                              size: 24,
                             ),
                           ),
-                        ],
+                        ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black45,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.people_rounded,
+                              color: Colors.white70,
+                              size: 14,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              '${_participants.length} Active',
+                              style: GoogleFonts.poppins(
+                                color: Colors.white70,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
               if (kIsWeb && _isRemoteConnected && !_webAudioUnlocked)
                 Positioned(
                   top: 132,
@@ -2860,106 +2854,107 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                     ),
                   ),
                 ),
-              Positioned(
-                bottom: 30,
-                left: 0,
-                right: 0,
-                child: Wrap(
-                  alignment: WrapAlignment.center,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  spacing: 14,
-                  runSpacing: 12,
-                  children: [
-                    if (widget.isTeacher)
+              if (!hideLiveChrome)
+                Positioned(
+                  bottom: 30,
+                  left: 0,
+                  right: 0,
+                  child: Wrap(
+                    alignment: WrapAlignment.center,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 14,
+                    runSpacing: 12,
+                    children: [
+                      if (widget.isTeacher)
+                        _buildControlButton(
+                          tooltip: _isRecording
+                              ? 'Recording in progress'
+                              : 'Start recording',
+                          icon: Icons.fiber_manual_record_rounded,
+                          color: _isRecording
+                              ? Colors.redAccent
+                              : Colors.white.withValues(alpha: 0.2),
+                          iconColor: _isRecording
+                              ? Colors.white
+                              : Colors.redAccent,
+                          enabled: _canStartRecording,
+                          dimWhenDisabled: !_isRecording,
+                          onTap: _startRecording,
+                        ),
                       _buildControlButton(
-                        tooltip: _isRecording
-                            ? 'Recording in progress'
-                            : 'Start recording',
-                        icon: Icons.fiber_manual_record_rounded,
-                        color: _isRecording
+                        tooltip: kIsWeb
+                            ? (_isSpeakerOn
+                                  ? 'Mute class sound'
+                                  : 'Enable class sound')
+                            : (_isSpeakerOn
+                                  ? 'Switch to earpiece'
+                                  : 'Switch to speaker'),
+                        icon: _isSpeakerOn
+                            ? Icons.volume_up_rounded
+                            : Icons.volume_down_rounded,
+                        color: _isSpeakerOn
+                            ? Colors.white.withValues(alpha: 0.2)
+                            : Colors.redAccent,
+                        iconColor: Colors.white,
+                        onTap: _toggleSpeaker,
+                      ),
+                      _buildControlButton(
+                        tooltip: _isMicMuted ? 'Unmute mic' : 'Mute mic',
+                        icon: _isMicMuted
+                            ? Icons.mic_off_rounded
+                            : Icons.mic_rounded,
+                        color: _isMicMuted
                             ? Colors.redAccent
                             : Colors.white.withValues(alpha: 0.2),
-                        iconColor: _isRecording
-                            ? Colors.white
-                            : Colors.redAccent,
-                        enabled: _canStartRecording,
-                        dimWhenDisabled: !_isRecording,
-                        onTap: _startRecording,
-                      ),
-                    _buildControlButton(
-                      tooltip: kIsWeb
-                          ? (_isSpeakerOn
-                                ? 'Mute class sound'
-                                : 'Enable class sound')
-                          : (_isSpeakerOn
-                                ? 'Switch to earpiece'
-                                : 'Switch to speaker'),
-                      icon: _isSpeakerOn
-                          ? Icons.volume_up_rounded
-                          : Icons.volume_down_rounded,
-                      color: _isSpeakerOn
-                          ? Colors.white.withValues(alpha: 0.2)
-                          : Colors.redAccent,
-                      iconColor: Colors.white,
-                      onTap: _toggleSpeaker,
-                    ),
-                    _buildControlButton(
-                      tooltip: _isMicMuted ? 'Unmute mic' : 'Mute mic',
-                      icon: _isMicMuted
-                          ? Icons.mic_off_rounded
-                          : Icons.mic_rounded,
-                      color: _isMicMuted
-                          ? Colors.redAccent
-                          : Colors.white.withValues(alpha: 0.2),
-                      iconColor: Colors.white,
-                      onTap: _toggleMic,
-                    ),
-                    _buildControlButton(
-                      tooltip: 'End call',
-                      icon: Icons.call_end_rounded,
-                      color: Colors.redAccent,
-                      iconColor: Colors.white,
-                      size: 64,
-                      onTap: _endCall,
-                    ),
-                    _buildControlButton(
-                      tooltip: _isVideoOff
-                          ? 'Turn camera on'
-                          : 'Turn camera off',
-                      icon: _isVideoOff
-                          ? Icons.videocam_off_rounded
-                          : Icons.videocam_rounded,
-                      color: _isVideoOff
-                          ? Colors.redAccent
-                          : Colors.white.withValues(alpha: 0.2),
-                      iconColor: Colors.white,
-                      onTap: _toggleVideo,
-                    ),
-                    if (widget.isTeacher && _sharedDocUrl == null)
-                      _buildControlButton(
-                        tooltip: _isSavingRecording
-                            ? 'Saving recording'
-                            : 'Save recording',
-                        icon: Icons.save_rounded,
-                        color: const Color(0xFF1F7A4D),
                         iconColor: Colors.white,
-                        enabled: _canSaveRecording,
-                        onTap: _saveRecordingNow,
+                        onTap: _toggleMic,
                       ),
-                    if (widget.isTeacher && _sharedDocUrl == null)
                       _buildControlButton(
-                        tooltip: 'Share Document',
-                        icon: Icons.present_to_all_rounded,
-                        color: Colors.white.withValues(alpha: 0.2),
+                        tooltip: 'End call',
+                        icon: Icons.call_end_rounded,
+                        color: Colors.redAccent,
                         iconColor: Colors.white,
-                        enabled: !_isProcessing,
-                        onTap: () async {
-                          await _shareDocumentPicker();
-                        },
+                        size: 64,
+                        onTap: _endCall,
                       ),
-                  ],
+                      _buildControlButton(
+                        tooltip: _isVideoOff
+                            ? 'Turn camera on'
+                            : 'Turn camera off',
+                        icon: _isVideoOff
+                            ? Icons.videocam_off_rounded
+                            : Icons.videocam_rounded,
+                        color: _isVideoOff
+                            ? Colors.redAccent
+                            : Colors.white.withValues(alpha: 0.2),
+                        iconColor: Colors.white,
+                        onTap: _toggleVideo,
+                      ),
+                      if (widget.isTeacher && _sharedDocUrl == null)
+                        _buildControlButton(
+                          tooltip: _isSavingRecording
+                              ? 'Saving recording'
+                              : 'Save recording',
+                          icon: Icons.save_rounded,
+                          color: const Color(0xFF1F7A4D),
+                          iconColor: Colors.white,
+                          enabled: _canSaveRecording,
+                          onTap: _saveRecordingNow,
+                        ),
+                      if (widget.isTeacher && _sharedDocUrl == null)
+                        _buildControlButton(
+                          tooltip: 'Share Document',
+                          icon: Icons.present_to_all_rounded,
+                          color: Colors.white.withValues(alpha: 0.2),
+                          iconColor: Colors.white,
+                          enabled: !_isProcessing,
+                          onTap: () async {
+                            await _shareDocumentPicker();
+                          },
+                        ),
+                    ],
+                  ),
                 ),
-              ),
               if (_isProcessing)
                 Positioned.fill(
                   child: Container(
@@ -3059,35 +3054,42 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         final newUrl = doc['url']?.toString();
         final newName = doc['file_name']?.toString();
         final newType = doc['file_type']?.toString();
-        final newPage = doc['current_page'] as int? ?? 1;
+        final rawPage = _parseInt(doc['current_page']) ?? 1;
+        final newPageCount = _parseInt(doc['page_count']) ?? 0;
+        final maxPage = newPageCount > 0 ? newPageCount : rawPage;
+        final newPage = rawPage.clamp(1, maxPage).toInt();
 
         if (newUrl != _sharedDocUrl) {
+          _documentTransformationController.value = Matrix4.identity();
           setState(() {
             _sharedDocUrl = newUrl;
             _sharedDocName = newName;
             _sharedDocType = newType;
             _sharedDocPage = newPage;
-            _localPdfPath = null;
+            _sharedDocPageCount = newPageCount;
+            _documentZoom = 1.0;
+            _isDocumentFullScreen = !widget.isTeacher && newUrl != null;
+            _pdfReloadNonce = 0;
+            _sharedPdfDocumentRef = newUrl != null && newType == 'pdf'
+                ? _createSharedPdfDocumentRef(newUrl)
+                : null;
             _showWhiteboardToolbar = true;
-            if (newType == 'image' && newUrl != null) {
-              _imageAspectRatio = 16 / 9; // Reset to default until resolved
-              _resolveImageAspectRatio(NetworkImage(newUrl));
-            } else if (newType == 'pdf') {
-              _imageAspectRatio =
-                  1.414; // Default landscape A4 aspect ratio for presentation slides
-            }
           });
-          if (newUrl != null && newType == 'pdf' && !kIsWeb) {
-            unawaited(_downloadPdf(newUrl));
-          }
         } else {
+          final pageChanged = newPage != _sharedDocPage;
+          if (pageChanged) {
+            _documentTransformationController.value = Matrix4.identity();
+          }
           setState(() {
             _sharedDocName = newName;
             _sharedDocPage = newPage;
+            if (newPageCount > 0) {
+              _sharedDocPageCount = newPageCount;
+            }
+            if (pageChanged) {
+              _documentZoom = 1.0;
+            }
           });
-          if (_sharedDocType == 'pdf' && _pdfController != null) {
-            _pdfController!.setPage(newPage - 1);
-          }
         }
         _recordPresentationEvent();
       } else {
@@ -3097,9 +3099,13 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
           _sharedDocName = null;
           _sharedDocType = null;
           _sharedDocPage = 1;
-          _localPdfPath = null;
+          _sharedDocPageCount = 0;
+          _sharedPdfDocumentRef = null;
+          _documentZoom = 1.0;
+          _isDocumentFullScreen = false;
           _localSharedFile = null;
         });
+        _documentTransformationController.value = Matrix4.identity();
         if (wasSharing) {
           _recordPresentationEvent(hidden: true);
         }
@@ -3182,38 +3188,113 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     _lastRecordedPresentationState = stateKey;
   }
 
-  Future<void> _downloadPdf(String url) async {
-    if (_isDownloadingPdf) return;
+  PdfDocumentRef _createSharedPdfDocumentRef(String url) {
+    return PdfDocumentRefUri(
+      Uri.parse(url),
+      key: PdfDocumentRefKey('$url#live-pdf-$_pdfReloadNonce'),
+      timeout: const Duration(minutes: 2),
+      useProgressiveLoading: true,
+    );
+  }
+
+  void _retrySharedPdf() {
+    final url = _sharedDocUrl;
+    if (url == null || !mounted) {
+      return;
+    }
+
     setState(() {
-      _isDownloadingPdf = true;
+      _pdfReloadNonce++;
+      _sharedPdfDocumentRef = _createSharedPdfDocumentRef(url);
+    });
+  }
+
+  void _resetDocumentZoom() {
+    _documentTransformationController.value = Matrix4.identity();
+    if (mounted && _documentZoom != 1.0) {
+      setState(() => _documentZoom = 1.0);
+    } else {
+      _documentZoom = 1.0;
+    }
+  }
+
+  void _setDocumentZoom(double zoom) {
+    final nextZoom = zoom.clamp(1.0, 5.0).toDouble();
+    _documentTransformationController.value = Matrix4.diagonal3Values(
+      nextZoom,
+      nextZoom,
+      1.0,
+    );
+    if (mounted) {
+      setState(() => _documentZoom = nextZoom);
+    }
+  }
+
+  void _toggleDocumentFullScreen() {
+    if (widget.isTeacher || !mounted) {
+      return;
+    }
+    setState(() {
+      _isDocumentFullScreen = !_isDocumentFullScreen;
+    });
+  }
+
+  void _changeSharedPdfPage(int requestedPage) {
+    if (!widget.isTeacher || _sharedDocType != 'pdf') {
+      return;
+    }
+
+    final pageCount = _sharedDocPageCount;
+    if (pageCount <= 0) {
+      _showSnackBar('PDF pages are still loading.');
+      return;
+    }
+
+    final nextPage = requestedPage.clamp(1, pageCount).toInt();
+    if (nextPage == _sharedDocPage) {
+      return;
+    }
+
+    _documentTransformationController.value = Matrix4.identity();
+    setState(() {
+      _sharedDocPage = nextPage;
+      _documentZoom = 1.0;
     });
 
-    try {
-      final client = HttpClient();
-      final request = await client.getUrl(Uri.parse(url));
-      final response = await request.close();
-      final bytes = await consolidateHttpClientResponseBytes(response);
+    _pdfPageSyncTask = _pdfPageSyncTask.then(
+      (_) => _webrtcRef.child('shared_document').update(<String, dynamic>{
+        'current_page': nextPage,
+        'page_count': pageCount,
+      }),
+    );
+  }
 
-      final tempDir = await getTemporaryDirectory();
-      final tempFile = File(
-        '${tempDir.path}/shared_class_doc_${widget.classId}.pdf',
-      );
-      await tempFile.writeAsBytes(bytes);
-
-      if (mounted) {
-        setState(() {
-          _localPdfPath = tempFile.path;
-          _isDownloadingPdf = false;
-        });
-      }
-    } catch (e) {
-      debugPrint('Error downloading PDF: $e');
-      if (mounted) {
-        setState(() {
-          _isDownloadingPdf = false;
-        });
-      }
+  void _handleSharedPdfLoaded(PdfDocument document) {
+    final pageCount = document.pages.length;
+    if (pageCount <= 0 || pageCount == _sharedDocPageCount) {
+      return;
     }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _sharedDocType != 'pdf') {
+        return;
+      }
+
+      final boundedPage = _sharedDocPage.clamp(1, pageCount).toInt();
+      setState(() {
+        _sharedDocPageCount = pageCount;
+        _sharedDocPage = boundedPage;
+      });
+
+      if (widget.isTeacher) {
+        unawaited(
+          _webrtcRef.child('shared_document').update(<String, dynamic>{
+            'current_page': boundedPage,
+            'page_count': pageCount,
+          }),
+        );
+      }
+    });
   }
 
   void _onDrawingStart(Offset point) {
@@ -3289,17 +3370,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         _localSharedFile = file;
         _isProcessing = true;
         _statusMessage = 'Uploading shared document...';
-        if (fileType == 'image') {
-          ImageProvider provider;
-          if (kIsWeb) {
-            provider = MemoryImage(file.bytes!);
-          } else {
-            provider = FileImage(File(file.path!));
-          }
-          _resolveImageAspectRatio(provider);
-        } else {
-          _imageAspectRatio = 1.414;
-        }
       });
 
       final authUid = await FirebaseUploadAuthService.ensureSignedIn();
@@ -3340,6 +3410,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         'file_name': file.name,
         'file_type': fileType,
         'current_page': 1,
+        'page_count': 0,
       });
 
       setState(() {
@@ -3377,129 +3448,96 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
 
     return Column(
       children: [
-        _buildParticipantVideoStrip(),
+        if (!_isStudentDocumentFullScreen) _buildParticipantVideoStrip(),
         Expanded(
           child: Stack(
             children: [
               Positioned.fill(
                 child: Container(
                   color: const Color(0xFF1C1C1E),
-                  child: Center(
-                    child: AspectRatio(
-                      aspectRatio: _imageAspectRatio,
-                      child: Stack(
-                        key: _canvasKey,
-                        children: [
-                          Positioned.fill(
-                            child: Container(
-                              color: Colors.white,
-                              child: isImage
-                                  ? _buildSharedImageView()
-                                  : (isPdf
-                                        ? _buildPdfView()
-                                        : const SizedBox.shrink()),
-                            ),
-                          ),
-                          Positioned.fill(
-                            child: widget.isTeacher
-                                ? GestureDetector(
-                                    behavior: HitTestBehavior.opaque,
-                                    onPanStart: _isDrawingMode
-                                        ? (details) {
-                                            final box =
-                                                _canvasKey.currentContext
-                                                        ?.findRenderObject()
-                                                    as RenderBox?;
-                                            if (box == null) return;
-                                            final localPos = box.globalToLocal(
-                                              details.globalPosition,
-                                            );
-                                            final normX =
-                                                (localPos.dx / box.size.width)
-                                                    .clamp(0.0, 1.0);
-                                            final normY =
-                                                (localPos.dy / box.size.height)
-                                                    .clamp(0.0, 1.0);
-                                            _onDrawingStart(
-                                              Offset(normX, normY),
-                                            );
-                                          }
-                                        : null,
-                                    onPanUpdate: _isDrawingMode
-                                        ? (details) {
-                                            final box =
-                                                _canvasKey.currentContext
-                                                        ?.findRenderObject()
-                                                    as RenderBox?;
-                                            if (box == null) return;
-                                            final localPos = box.globalToLocal(
-                                              details.globalPosition,
-                                            );
-                                            final normX =
-                                                (localPos.dx / box.size.width)
-                                                    .clamp(0.0, 1.0);
-                                            final normY =
-                                                (localPos.dy / box.size.height)
-                                                    .clamp(0.0, 1.0);
-                                            _onDrawingUpdate(
-                                              Offset(normX, normY),
-                                            );
-                                          }
-                                        : null,
-                                    onPanEnd: _isDrawingMode
-                                        ? (details) {
-                                            _onDrawingEnd();
-                                          }
-                                        : null,
-                                    child: CustomPaint(
-                                      painter: DrawingPainter(
-                                        completedStrokes: _completedStrokes,
-                                        currentStroke: _currentStroke,
-                                      ),
-                                      size: Size.infinite,
-                                    ),
-                                  )
-                                : IgnorePointer(
-                                    child: CustomPaint(
-                                      painter: DrawingPainter(
-                                        completedStrokes: _completedStrokes,
-                                        currentStroke: _currentStroke,
-                                      ),
-                                      size: Size.infinite,
-                                    ),
+                  child: Stack(
+                    key: _canvasKey,
+                    children: [
+                      Positioned.fill(
+                        child: Container(
+                          color: Colors.white,
+                          child: isImage
+                              ? _buildSharedImageView()
+                              : (isPdf
+                                    ? _buildPdfView()
+                                    : const SizedBox.shrink()),
+                        ),
+                      ),
+                      Positioned.fill(
+                        child: widget.isTeacher
+                            ? GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onPanStart: _isDrawingMode
+                                    ? (details) {
+                                        final box =
+                                            _canvasKey.currentContext
+                                                    ?.findRenderObject()
+                                                as RenderBox?;
+                                        if (box == null) return;
+                                        final localPos = box.globalToLocal(
+                                          details.globalPosition,
+                                        );
+                                        final normX =
+                                            (localPos.dx / box.size.width)
+                                                .clamp(0.0, 1.0);
+                                        final normY =
+                                            (localPos.dy / box.size.height)
+                                                .clamp(0.0, 1.0);
+                                        _onDrawingStart(Offset(normX, normY));
+                                      }
+                                    : null,
+                                onPanUpdate: _isDrawingMode
+                                    ? (details) {
+                                        final box =
+                                            _canvasKey.currentContext
+                                                    ?.findRenderObject()
+                                                as RenderBox?;
+                                        if (box == null) return;
+                                        final localPos = box.globalToLocal(
+                                          details.globalPosition,
+                                        );
+                                        final normX =
+                                            (localPos.dx / box.size.width)
+                                                .clamp(0.0, 1.0);
+                                        final normY =
+                                            (localPos.dy / box.size.height)
+                                                .clamp(0.0, 1.0);
+                                        _onDrawingUpdate(Offset(normX, normY));
+                                      }
+                                    : null,
+                                onPanEnd: _isDrawingMode
+                                    ? (details) {
+                                        _onDrawingEnd();
+                                      }
+                                    : null,
+                                child: CustomPaint(
+                                  painter: DrawingPainter(
+                                    completedStrokes: _completedStrokes,
+                                    currentStroke: _currentStroke,
                                   ),
-                          ),
-                          if (isPdf && _isDownloadingPdf)
-                            Positioned.fill(
-                              child: Container(
-                                color: Colors.black54,
-                                child: const Center(
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      CircularProgressIndicator(
-                                        color: Colors.white,
-                                      ),
-                                      SizedBox(height: 16),
-                                      Text(
-                                        'Downloading PDF...',
-                                        style: TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 16,
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                    ],
+                                  size: Size.infinite,
+                                ),
+                              )
+                            : IgnorePointer(
+                                child: CustomPaint(
+                                  painter: DrawingPainter(
+                                    completedStrokes: _completedStrokes,
+                                    currentStroke: _currentStroke,
                                   ),
+                                  size: Size.infinite,
                                 ),
                               ),
-                            ),
-                        ],
                       ),
-                    ),
+                    ],
                   ),
                 ),
               ),
+              _buildDocumentViewControls(),
               _buildWhiteboardToolbar(),
             ],
           ),
@@ -3510,122 +3548,225 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
 
   Widget _buildSharedImageView() {
     final localFile = _localSharedFile;
+    Widget? image;
     if (widget.isTeacher && localFile != null) {
       if (kIsWeb) {
         final bytes = localFile.bytes;
         if (bytes != null) {
-          return Image.memory(bytes, fit: BoxFit.contain);
+          image = Image.memory(bytes, fit: BoxFit.contain);
         }
       } else {
         final path = localFile.path;
         if (path != null) {
-          return Image.file(File(path), fit: BoxFit.contain);
+          image = Image.file(File(path), fit: BoxFit.contain);
         }
       }
     }
 
-    return UniversalImage(
+    image ??= UniversalImage(
       imageUrl: _sharedDocUrl!,
       fit: BoxFit.contain,
       errorBuilder: (context, error, stackTrace) => const Center(
         child: Icon(Icons.broken_image, color: Colors.grey, size: 48),
       ),
     );
+    return _buildZoomableSharedDocument(image);
   }
 
   Widget _buildPdfView() {
-    if (widget.isTeacher && _localSharedFile != null && !kIsWeb) {
-      final path = _localSharedFile!.path;
-      if (path != null) {
-        return PDFView(
-          filePath: path,
-          enableSwipe: !_isDrawingMode,
-          swipeHorizontal: true,
-          autoSpacing: false,
-          pageFling: false,
-          defaultPage: _sharedDocPage - 1,
-          onViewCreated: (controller) {
-            _pdfController = controller;
-            controller.setPage(_sharedDocPage - 1);
-          },
-          onPageChanged: (page, total) {
-            if (widget.isTeacher && page != null) {
-              final newPage = page + 1;
-              if (newPage != _sharedDocPage) {
-                _webrtcRef.child('shared_document').update({
-                  'current_page': newPage,
-                });
-              }
-            }
-          },
-        );
-      }
-    }
-
-    if (kIsWeb) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.picture_as_pdf, size: 64, color: Colors.redAccent),
-            const SizedBox(height: 16),
-            const Text(
-              'PDF Presentation Shared',
-              style: TextStyle(
-                color: Colors.black87,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Page $_sharedDocPage',
-              style: const TextStyle(color: Colors.black54, fontSize: 14),
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.primaryNavy,
-                foregroundColor: Colors.white,
-              ),
-              onPressed: () => launchUrl(Uri.parse(_sharedDocUrl!)),
-              icon: const Icon(Icons.open_in_new),
-              label: const Text('Open PDF in New Tab'),
-            ),
-          ],
-        ),
-      );
-    }
-
-    if (_localPdfPath == null) {
+    final documentRef = _sharedPdfDocumentRef;
+    if (documentRef == null) {
       return const Center(child: CircularProgressIndicator());
     }
 
-    return PDFView(
-      filePath: _localPdfPath,
-      enableSwipe: !_isDrawingMode,
-      swipeHorizontal: true,
-      autoSpacing: false,
-      pageFling: false,
-      defaultPage: _sharedDocPage - 1,
-      onViewCreated: (controller) {
-        _pdfController = controller;
-        controller.setPage(_sharedDocPage - 1);
+    return PdfDocumentViewBuilder(
+      key: ValueKey<String>('live-pdf-${_sharedDocUrl!}-$_pdfReloadNonce'),
+      documentRef: documentRef,
+      loadingBuilder: (context) => const Center(
+        child: CircularProgressIndicator(color: AppColors.primaryNavy),
+      ),
+      errorBuilder: (context, error, stackTrace) {
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.picture_as_pdf_rounded,
+                  size: 56,
+                  color: Colors.redAccent,
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'PDF could not be displayed',
+                  style: TextStyle(
+                    color: Colors.black87,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 10,
+                  runSpacing: 8,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: _retrySharedPdf,
+                      icon: const Icon(Icons.refresh_rounded),
+                      label: const Text('Retry PDF'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => unawaited(
+                        launchUrl(
+                          Uri.parse(_sharedDocUrl!),
+                          mode: LaunchMode.externalApplication,
+                        ),
+                      ),
+                      icon: const Icon(Icons.open_in_new_rounded),
+                      label: const Text('Open externally'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
       },
-      onPageChanged: (page, total) {
-        if (widget.isTeacher && page != null) {
-          final newPage = page + 1;
-          if (newPage != _sharedDocPage) {
-            _webrtcRef.child('shared_document').update({
-              'current_page': newPage,
-            });
-          }
+      builder: (context, document) {
+        if (document == null || document.pages.isEmpty) {
+          return const Center(
+            child: CircularProgressIndicator(color: AppColors.primaryNavy),
+          );
         }
+
+        _handleSharedPdfLoaded(document);
+        final page = _sharedDocPage.clamp(1, document.pages.length).toInt();
+        return _buildZoomableSharedDocument(
+          PdfPageView(
+            key: ValueKey<String>('${_sharedDocUrl!}-$page'),
+            document: document,
+            pageNumber: page,
+            maximumDpi: kIsWeb ? 180 : 240,
+            backgroundColor: Colors.white,
+            decoration: const BoxDecoration(color: Colors.white),
+          ),
+        );
       },
     );
   }
 
+  Widget _buildZoomableSharedDocument(Widget child) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return InteractiveViewer(
+          transformationController: _documentTransformationController,
+          minScale: 1.0,
+          maxScale: 5.0,
+          panEnabled: !_isDrawingMode,
+          scaleEnabled: !_isDrawingMode,
+          clipBehavior: Clip.hardEdge,
+          onInteractionEnd: (details) {
+            final zoom = _documentTransformationController.value
+                .getMaxScaleOnAxis()
+                .clamp(1.0, 5.0)
+                .toDouble();
+            if (mounted && (zoom - _documentZoom).abs() > 0.01) {
+              setState(() => _documentZoom = zoom);
+            }
+          },
+          child: SizedBox(
+            width: constraints.maxWidth,
+            height: constraints.maxHeight,
+            child: child,
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildDocumentViewControls() {
+    return Positioned(
+      top: 12,
+      right: 12,
+      child: SafeArea(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.78),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: Colors.white24),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (_sharedDocType == 'pdf') ...[
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Text(
+                    _sharedDocPageCount > 0
+                        ? '$_sharedDocPage/$_sharedDocPageCount'
+                        : 'Page $_sharedDocPage',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                Container(width: 1, height: 24, color: Colors.white24),
+              ],
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                tooltip: 'Zoom out',
+                onPressed: _documentZoom > 1.0
+                    ? () => _setDocumentZoom(_documentZoom - 0.5)
+                    : null,
+                icon: const Icon(Icons.zoom_out_rounded, color: Colors.white),
+              ),
+              TextButton(
+                onPressed: _resetDocumentZoom,
+                child: Text(
+                  '${(_documentZoom * 100).round()}%',
+                  style: const TextStyle(color: Colors.white),
+                ),
+              ),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                tooltip: 'Zoom in',
+                onPressed: _documentZoom < 5.0
+                    ? () => _setDocumentZoom(_documentZoom + 0.5)
+                    : null,
+                icon: const Icon(Icons.zoom_in_rounded, color: Colors.white),
+              ),
+              if (!widget.isTeacher) ...[
+                Container(width: 1, height: 24, color: Colors.white24),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: _isStudentDocumentFullScreen
+                      ? 'Exit full screen'
+                      : 'View full screen',
+                  onPressed: _toggleDocumentFullScreen,
+                  icon: Icon(
+                    _isStudentDocumentFullScreen
+                        ? Icons.fullscreen_exit_rounded
+                        : Icons.fullscreen_rounded,
+                    color: Colors.white,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildWhiteboardToolbar() {
+    if (_isStudentDocumentFullScreen) {
+      return const SizedBox.shrink();
+    }
+
     if (!_showWhiteboardToolbar) {
       return Positioned(
         bottom: 120,
@@ -3809,40 +3950,38 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                 if (_sharedDocType == 'pdf')
                   Row(
                     children: [
-                      IconButton(
-                        icon: const Icon(
-                          Icons.arrow_back_ios_rounded,
-                          color: Colors.white,
+                      if (widget.isTeacher)
+                        IconButton(
+                          icon: const Icon(
+                            Icons.arrow_back_ios_rounded,
+                            color: Colors.white,
+                          ),
+                          onPressed: _sharedDocPage > 1
+                              ? () => _changeSharedPdfPage(_sharedDocPage - 1)
+                              : null,
                         ),
-                        onPressed: _sharedDocPage > 1
-                            ? () {
-                                final newPage = _sharedDocPage - 1;
-                                _webrtcRef.child('shared_document').update({
-                                  'current_page': newPage,
-                                });
-                              }
-                            : null,
-                      ),
                       Text(
-                        'Page $_sharedDocPage',
+                        _sharedDocPageCount > 0
+                            ? 'Page $_sharedDocPage/$_sharedDocPageCount'
+                            : 'Page $_sharedDocPage',
                         style: const TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.bold,
                           fontSize: 14,
                         ),
                       ),
-                      IconButton(
-                        icon: const Icon(
-                          Icons.arrow_forward_ios_rounded,
-                          color: Colors.white,
+                      if (widget.isTeacher)
+                        IconButton(
+                          icon: const Icon(
+                            Icons.arrow_forward_ios_rounded,
+                            color: Colors.white,
+                          ),
+                          onPressed:
+                              _sharedDocPageCount > 0 &&
+                                  _sharedDocPage < _sharedDocPageCount
+                              ? () => _changeSharedPdfPage(_sharedDocPage + 1)
+                              : null,
                         ),
-                        onPressed: () {
-                          final newPage = _sharedDocPage + 1;
-                          _webrtcRef.child('shared_document').update({
-                            'current_page': newPage,
-                          });
-                        },
-                      ),
                     ],
                   )
                 else
