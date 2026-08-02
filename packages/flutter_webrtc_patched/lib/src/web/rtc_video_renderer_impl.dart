@@ -78,7 +78,13 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
   bool get muted => _muted;
 
   @override
-  set muted(bool mute) => _audioElement?.muted = _muted = mute;
+  set muted(bool mute) {
+    _muted = mute;
+    _audioElement?.muted = mute;
+    if (!mute) {
+      unawaited(_tryPlayAudio());
+    }
+  }
 
   double _volume = 1.0;
 
@@ -87,6 +93,26 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
   set volume(double val) {
     _volume = val;
     _audioElement?.volume = val;
+    if (val > 0 && !_muted) {
+      unawaited(_tryPlayAudio());
+    }
+  }
+
+  Future<void> _tryPlayAudio() async {
+    final element = _audioElement;
+    if (element == null || element.muted || element.volume <= 0) {
+      return;
+    }
+
+    try {
+      // Browsers may reject this until it runs from a user gesture. The app's
+      // "Enable class sound" action writes muted/volume again, which retries
+      // play inside that gesture.
+      await element.play().toDart;
+    } catch (_) {
+      // Autoplay rejection is expected on some browsers. Keep the renderer
+      // alive so playback can be retried after the user taps the sound action.
+    }
   }
 
   @override
@@ -150,6 +176,7 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
         _ensureAudioManagerDiv().append(_audioElement!);
       }
       _audioElement?.srcObject = _audioStream;
+      unawaited(_tryPlayAudio());
     }
 
     var videoElement = findHtmlView();
@@ -201,6 +228,7 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
         _ensureAudioManagerDiv().append(_audioElement!);
       }
       _audioElement?.srcObject = _audioStream;
+      unawaited(_tryPlayAudio());
     }
 
     var videoElement = findHtmlView();

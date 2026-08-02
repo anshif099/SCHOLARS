@@ -7,6 +7,7 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_pdfview/flutter_pdfview.dart';
@@ -47,6 +48,9 @@ class LiveVideoRoomPage extends StatefulWidget {
 }
 
 class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
+  static const MethodChannel _audioOutputChannel = MethodChannel(
+    'com.academy.scholars/audio_output',
+  );
   static const int _callVideoWidth = 640;
   static const int _callVideoHeight = 360;
   static const int _callVideoMinFrameRate = 24;
@@ -107,6 +111,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       <Map<String, dynamic>>[];
   String? _lastRecordedPresentationState;
   bool _isSpeakerOn = true;
+  bool _webAudioUnlocked = !kIsWeb;
   Timer? _recordingTimer;
   Timer? _studentReconnectTimer;
   int _studentReconnectAttempts = 0;
@@ -355,13 +360,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
 
       if (!WebRTC.platformIsWeb) {
         // Delay slightly to ensure AudioSwitchManager is active/started,
-        // then force speakerphone to be ON by default.
+        // then force speakerphone and maximum call volume by default.
         Future.delayed(const Duration(milliseconds: 500), () async {
-          try {
-            await Helper.setSpeakerphoneOn(true);
-          } catch (e) {
-            debugPrint('Failed to set speakerphone on at start: $e');
-          }
+          await _maximizeAndroidSpeakerVolume();
         });
       }
       _listenToParticipants();
@@ -408,8 +409,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     final participantRef = _participantsRef.child(_localParticipantId);
     await participantRef.runTransaction((currentValue) {
       if (currentValue is Map) {
-        final currentConnectionId =
-            currentValue['connection_id']?.toString();
+        final currentConnectionId = currentValue['connection_id']?.toString();
         if (currentConnectionId != null &&
             currentConnectionId.isNotEmpty &&
             currentConnectionId != _connectionId) {
@@ -426,8 +426,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       if (currentValue is Map) {
         final offer = currentValue['offer'];
         if (offer is Map) {
-          final receiverConnectionId =
-              offer['receiver_connection_id']?.toString();
+          final receiverConnectionId = offer['receiver_connection_id']
+              ?.toString();
           if (receiverConnectionId != null &&
               receiverConnectionId.isNotEmpty &&
               receiverConnectionId != _connectionId) {
@@ -492,15 +492,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         ? <String, dynamic>{
             'audio': true,
             'video': <String, dynamic>{
-              'width': <String, dynamic>{
-                'ideal': _callVideoWidth,
-              },
-              'height': <String, dynamic>{
-                'ideal': _callVideoHeight,
-              },
-              'frameRate': <String, dynamic>{
-                'ideal': _callVideoMaxFrameRate,
-              },
+              'width': <String, dynamic>{'ideal': _callVideoWidth},
+              'height': <String, dynamic>{'ideal': _callVideoHeight},
+              'frameRate': <String, dynamic>{'ideal': _callVideoMaxFrameRate},
               'facingMode': 'user',
             },
           }
@@ -697,10 +691,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     }
   }
 
-  Future<void> _startTeacherPeer(
-    String studentId,
-    String? connectionId,
-  ) async {
+  Future<void> _startTeacherPeer(String studentId, String? connectionId) async {
     _teacherPeerStartInProgress.add(studentId);
 
     try {
@@ -771,8 +762,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
           studentId == _localParticipantId) {
         continue;
       }
-      otherStudentConnections[studentId] =
-          participant['connection_id']?.toString();
+      otherStudentConnections[studentId] = participant['connection_id']
+          ?.toString();
     }
     final otherStudentIds = otherStudentConnections.keys.toSet();
 
@@ -822,7 +813,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
             .listen(
               (event) => unawaited(_handleAnswerUpdated(studentId, event)),
               onError: (Object error, StackTrace stackTrace) {
-                _reportNonFatalError('student answer listener', error, stackTrace);
+                _reportNonFatalError(
+                  'student answer listener',
+                  error,
+                  stackTrace,
+                );
               },
             );
 
@@ -834,7 +829,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
             .listen(
               (event) => unawaited(_handleOfferUpdated(studentId, event)),
               onError: (Object error, StackTrace stackTrace) {
-                _reportNonFatalError('student offer listener', error, stackTrace);
+                _reportNonFatalError(
+                  'student offer listener',
+                  error,
+                  stackTrace,
+                );
               },
             );
       }
@@ -1026,15 +1025,15 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       }
 
       final candidateMap = Map<String, dynamic>.from(rawValue);
-      final targetConnectionId =
-          candidateMap['target_connection_id']?.toString();
+      final targetConnectionId = candidateMap['target_connection_id']
+          ?.toString();
       if (targetConnectionId != null &&
           targetConnectionId.isNotEmpty &&
           targetConnectionId != _connectionId) {
         return;
       }
-      final senderConnectionId =
-          candidateMap['sender_connection_id']?.toString();
+      final senderConnectionId = candidateMap['sender_connection_id']
+          ?.toString();
       if (session.remoteConnectionId != null &&
           senderConnectionId != null &&
           senderConnectionId.isNotEmpty &&
@@ -1130,8 +1129,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       }
 
       final offerMap = Map<String, dynamic>.from(rawValue);
-      final receiverConnectionId =
-          offerMap['receiver_connection_id']?.toString();
+      final receiverConnectionId = offerMap['receiver_connection_id']
+          ?.toString();
       if (receiverConnectionId != null &&
           receiverConnectionId.isNotEmpty &&
           receiverConnectionId != _connectionId) {
@@ -1255,7 +1254,24 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     renderer.srcObject = stream;
 
     if (kIsWeb) {
-      renderer.volume = _isSpeakerOn ? 1.0 : 0.15;
+      renderer.muted = !_isSpeakerOn;
+      renderer.volume = _isSpeakerOn ? 1.0 : 0.0;
+    } else {
+      for (final audioTrack in stream.getAudioTracks()) {
+        audioTrack.enabled = true;
+        try {
+          await Helper.setVolume(1.0, audioTrack);
+        } catch (error, stackTrace) {
+          _reportNonFatalError(
+            'set incoming audio track volume',
+            error,
+            stackTrace,
+          );
+        }
+      }
+      if (_isSpeakerOn) {
+        await _maximizeAndroidSpeakerVolume();
+      }
     }
 
     if (kIsWeb && _mediaRecorder != null) {
@@ -1272,6 +1288,48 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       _errorMessage = null;
       _statusMessage = _connectedStatusMessage();
     });
+  }
+
+  Future<void> _maximizeAndroidSpeakerVolume() async {
+    if (kIsWeb) {
+      return;
+    }
+
+    try {
+      await Helper.setSpeakerphoneOn(true);
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        await _audioOutputChannel.invokeMethod<void>('maximizeSpeakerVolume');
+      }
+    } catch (error, stackTrace) {
+      _reportNonFatalError(
+        'maximize Android speaker volume',
+        error,
+        stackTrace,
+      );
+    }
+  }
+
+  void _enableWebAudio({bool showMessage = true}) {
+    if (!kIsWeb) {
+      return;
+    }
+
+    for (final renderer in _remoteRenderers.values) {
+      // These setters also retry HTMLAudioElement.play(). Calling them from
+      // this tap satisfies browser autoplay policies that blocked sound.
+      renderer.muted = false;
+      renderer.volume = 1.0;
+    }
+
+    if (mounted) {
+      setState(() {
+        _isSpeakerOn = true;
+        _webAudioUnlocked = true;
+      });
+      if (showMessage) {
+        _showSnackBar('Class sound enabled at full volume');
+      }
+    }
   }
 
   Future<void> _startLoopbackConnection() async {
@@ -1431,7 +1489,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
 
     try {
       if (kIsWeb) {
-        _localVideoPath = 'web_recording_${DateTime.now().millisecondsSinceEpoch}';
+        _localVideoPath =
+            'web_recording_${DateTime.now().millisecondsSinceEpoch}';
       } else {
         final storageDir = await getApplicationDocumentsDirectory();
         final recDir = Directory('${storageDir.path}/recordings');
@@ -1659,18 +1718,15 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     if (widget.isTeacher || _hasEndedCall || _isCleaningUp) return;
 
     _studentReconnectTimer?.cancel();
-    _studentReconnectTimer = Timer(
-      delay ?? _studentReconnectDelay,
-      () {
-        if (!_isStudentTeacherConnected && !_hasEndedCall && !_isCleaningUp) {
-          if (_studentReconnectAttempts >= _maxStudentReconnectAttempts) {
-            _showReconnectAction();
-          } else {
-            unawaited(_restartStudentConnection());
-          }
+    _studentReconnectTimer = Timer(delay ?? _studentReconnectDelay, () {
+      if (!_isStudentTeacherConnected && !_hasEndedCall && !_isCleaningUp) {
+        if (_studentReconnectAttempts >= _maxStudentReconnectAttempts) {
+          _showReconnectAction();
+        } else {
+          unawaited(_restartStudentConnection());
         }
-      },
-    );
+      }
+    });
   }
 
   void _showReconnectAction() {
@@ -2467,18 +2523,22 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     if (kIsWeb) {
       setState(() {
         _isSpeakerOn = nextVal;
+        _webAudioUnlocked = nextVal;
       });
       for (final renderer in _remoteRenderers.values) {
-        renderer.volume = nextVal ? 1.0 : 0.15;
+        renderer.muted = !nextVal;
+        renderer.volume = nextVal ? 1.0 : 0.0;
       }
-      _showSnackBar(nextVal ? 'Volume set to high' : 'Volume set to normal');
+      _showSnackBar(nextVal ? 'Class sound enabled' : 'Class sound muted');
     } else {
       try {
         await Helper.setSpeakerphoneOn(nextVal);
         setState(() {
           _isSpeakerOn = nextVal;
         });
-        _showSnackBar(nextVal ? 'Speakerphone turned on' : 'Earpiece turned on');
+        _showSnackBar(
+          nextVal ? 'Speakerphone turned on' : 'Earpiece turned on',
+        );
       } catch (e) {
         debugPrint('Failed to toggle speakerphone: $e');
       }
@@ -2732,6 +2792,30 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                   ],
                 ),
               ),
+              if (kIsWeb && _isRemoteConnected && !_webAudioUnlocked)
+                Positioned(
+                  top: 132,
+                  left: 20,
+                  right: 20,
+                  child: Center(
+                    child: FilledButton.icon(
+                      onPressed: _enableWebAudio,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF1F7A4D),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 14,
+                        ),
+                      ),
+                      icon: const Icon(Icons.volume_up_rounded),
+                      label: Text(
+                        'Tap to enable class sound',
+                        style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ),
+                ),
               Positioned(
                 bottom: 30,
                 left: 0,
@@ -2759,9 +2843,13 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                         onTap: _startRecording,
                       ),
                     _buildControlButton(
-                      tooltip: _isSpeakerOn
-                          ? 'Switch to earpiece'
-                          : 'Switch to speaker',
+                      tooltip: kIsWeb
+                          ? (_isSpeakerOn
+                                ? 'Mute class sound'
+                                : 'Enable class sound')
+                          : (_isSpeakerOn
+                                ? 'Switch to earpiece'
+                                : 'Switch to speaker'),
                       icon: _isSpeakerOn
                           ? Icons.volume_up_rounded
                           : Icons.volume_down_rounded,
@@ -2917,7 +3005,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   }
 
   void _listenForSharedWhiteboard() {
-    _sharedDocumentSub = _webrtcRef.child('shared_document').onValue.listen((event) {
+    _sharedDocumentSub = _webrtcRef.child('shared_document').onValue.listen((
+      event,
+    ) {
       if (!mounted) return;
       final val = event.snapshot.value;
       if (val is Map) {
@@ -2939,7 +3029,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
               _imageAspectRatio = 16 / 9; // Reset to default until resolved
               _resolveImageAspectRatio(NetworkImage(newUrl));
             } else if (newType == 'pdf') {
-              _imageAspectRatio = 1.414; // Default landscape A4 aspect ratio for presentation slides
+              _imageAspectRatio =
+                  1.414; // Default landscape A4 aspect ratio for presentation slides
             }
           });
           if (newUrl != null && newType == 'pdf' && !kIsWeb) {
@@ -2971,7 +3062,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       }
     });
 
-    _drawingStrokesSub = _webrtcRef.child('drawing_strokes').onValue.listen((event) {
+    _drawingStrokesSub = _webrtcRef.child('drawing_strokes').onValue.listen((
+      event,
+    ) {
       if (!mounted) return;
       final val = event.snapshot.value;
       final List<DrawingStroke> strokes = [];
@@ -2987,7 +3080,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       });
     });
 
-    _currentStrokeSub = _webrtcRef.child('current_stroke').onValue.listen((event) {
+    _currentStrokeSub = _webrtcRef.child('current_stroke').onValue.listen((
+      event,
+    ) {
       if (!mounted) return;
       final val = event.snapshot.value;
       if (val is Map) {
@@ -3054,9 +3149,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       final request = await client.getUrl(Uri.parse(url));
       final response = await request.close();
       final bytes = await consolidateHttpClientResponseBytes(response);
-      
+
       final tempDir = await getTemporaryDirectory();
-      final tempFile = File('${tempDir.path}/shared_class_doc_${widget.classId}.pdf');
+      final tempFile = File(
+        '${tempDir.path}/shared_class_doc_${widget.classId}.pdf',
+      );
       await tempFile.writeAsBytes(bytes);
 
       if (mounted) {
@@ -3098,7 +3195,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     final now = DateTime.now().millisecondsSinceEpoch;
     if (now - _lastSyncTime > 100) {
       _lastSyncTime = now;
-      unawaited(_webrtcRef.child('current_stroke').set(_currentStroke!.toJson()));
+      unawaited(
+        _webrtcRef.child('current_stroke').set(_currentStroke!.toJson()),
+      );
     }
   }
 
@@ -3110,7 +3209,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       _activePoints = [];
       setState(() {});
 
-      unawaited(_webrtcRef.child('drawing_strokes').push().set(finishedStroke.toJson()));
+      unawaited(
+        _webrtcRef.child('drawing_strokes').push().set(finishedStroke.toJson()),
+      );
       unawaited(_webrtcRef.child('current_stroke').remove());
     }
   }
@@ -3179,10 +3280,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         final mimeType = isPdf
             ? 'application/pdf'
             : (fileExtension == 'png' ? 'image/png' : 'image/jpeg');
-        await ref.putData(
-          bytes,
-          SettableMetadata(contentType: mimeType),
-        );
+        await ref.putData(bytes, SettableMetadata(contentType: mimeType));
       } else {
         final localFile = File(file.path!);
         await ref.putFile(localFile);
@@ -3253,7 +3351,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                               color: Colors.white,
                               child: isImage
                                   ? _buildSharedImageView()
-                                  : (isPdf ? _buildPdfView() : const SizedBox.shrink()),
+                                  : (isPdf
+                                        ? _buildPdfView()
+                                        : const SizedBox.shrink()),
                             ),
                           ),
                           Positioned.fill(
@@ -3262,22 +3362,44 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                                     behavior: HitTestBehavior.opaque,
                                     onPanStart: _isDrawingMode
                                         ? (details) {
-                                            final box = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
+                                            final box =
+                                                _canvasKey.currentContext
+                                                        ?.findRenderObject()
+                                                    as RenderBox?;
                                             if (box == null) return;
-                                            final localPos = box.globalToLocal(details.globalPosition);
-                                            final normX = (localPos.dx / box.size.width).clamp(0.0, 1.0);
-                                            final normY = (localPos.dy / box.size.height).clamp(0.0, 1.0);
-                                            _onDrawingStart(Offset(normX, normY));
+                                            final localPos = box.globalToLocal(
+                                              details.globalPosition,
+                                            );
+                                            final normX =
+                                                (localPos.dx / box.size.width)
+                                                    .clamp(0.0, 1.0);
+                                            final normY =
+                                                (localPos.dy / box.size.height)
+                                                    .clamp(0.0, 1.0);
+                                            _onDrawingStart(
+                                              Offset(normX, normY),
+                                            );
                                           }
                                         : null,
                                     onPanUpdate: _isDrawingMode
                                         ? (details) {
-                                            final box = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
+                                            final box =
+                                                _canvasKey.currentContext
+                                                        ?.findRenderObject()
+                                                    as RenderBox?;
                                             if (box == null) return;
-                                            final localPos = box.globalToLocal(details.globalPosition);
-                                            final normX = (localPos.dx / box.size.width).clamp(0.0, 1.0);
-                                            final normY = (localPos.dy / box.size.height).clamp(0.0, 1.0);
-                                            _onDrawingUpdate(Offset(normX, normY));
+                                            final localPos = box.globalToLocal(
+                                              details.globalPosition,
+                                            );
+                                            final normX =
+                                                (localPos.dx / box.size.width)
+                                                    .clamp(0.0, 1.0);
+                                            final normY =
+                                                (localPos.dy / box.size.height)
+                                                    .clamp(0.0, 1.0);
+                                            _onDrawingUpdate(
+                                              Offset(normX, normY),
+                                            );
                                           }
                                         : null,
                                     onPanEnd: _isDrawingMode
@@ -3311,11 +3433,17 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                                   child: Column(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      CircularProgressIndicator(color: Colors.white),
+                                      CircularProgressIndicator(
+                                        color: Colors.white,
+                                      ),
                                       SizedBox(height: 16),
                                       Text(
                                         'Downloading PDF...',
-                                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.w500,
+                                        ),
                                       ),
                                     ],
                                   ),
@@ -3399,7 +3527,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
             const SizedBox(height: 16),
             const Text(
               'PDF Presentation Shared',
-              style: TextStyle(color: Colors.black87, fontSize: 18, fontWeight: FontWeight.bold),
+              style: TextStyle(
+                color: Colors.black87,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 8),
             Text(
@@ -3464,10 +3596,14 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                 color: Colors.black.withValues(alpha: 0.85),
                 shape: BoxShape.circle,
                 border: Border.all(color: Colors.white24),
-                boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 8)],
+                boxShadow: const [
+                  BoxShadow(color: Colors.black38, blurRadius: 8),
+                ],
               ),
               child: Icon(
-                widget.isTeacher ? Icons.palette_rounded : Icons.visibility_rounded,
+                widget.isTeacher
+                    ? Icons.palette_rounded
+                    : Icons.visibility_rounded,
                 color: Colors.white,
                 size: 24,
               ),
@@ -3491,7 +3627,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
               decoration: BoxDecoration(
                 color: Colors.black.withValues(alpha: 0.85),
                 borderRadius: BorderRadius.circular(24),
-                boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 10)],
+                boxShadow: const [
+                  BoxShadow(color: Colors.black26, blurRadius: 10),
+                ],
               ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -3517,7 +3655,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                         dropdownColor: Colors.black87,
                         value: _selectedDrawWidth,
                         underline: const SizedBox.shrink(),
-                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
                         items: [2.0, 4.0, 6.0, 8.0, 10.0].map((width) {
                           return DropdownMenuItem<double>(
                             value: width,
@@ -3542,7 +3683,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
             decoration: BoxDecoration(
               color: Colors.black.withValues(alpha: 0.8),
               borderRadius: BorderRadius.circular(30),
-              boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 10)],
+              boxShadow: const [
+                BoxShadow(color: Colors.black26, blurRadius: 10),
+              ],
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -3552,8 +3695,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                     children: [
                       IconButton(
                         icon: Icon(
-                          _isDrawingMode ? Icons.edit_off_rounded : Icons.edit_rounded,
-                          color: _isDrawingMode ? Colors.redAccent : Colors.white,
+                          _isDrawingMode
+                              ? Icons.edit_off_rounded
+                              : Icons.edit_rounded,
+                          color: _isDrawingMode
+                              ? Colors.redAccent
+                              : Colors.white,
                         ),
                         tooltip: 'Pencil Mode',
                         onPressed: () {
@@ -3564,14 +3711,21 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                       ),
                       if (_isDrawingMode)
                         IconButton(
-                          icon: const Icon(Icons.delete_sweep_rounded, color: Colors.white),
+                          icon: const Icon(
+                            Icons.delete_sweep_rounded,
+                            color: Colors.white,
+                          ),
                           tooltip: 'Clear drawings',
                           onPressed: _clearDrawings,
                         ),
                       IconButton(
-                        icon: const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.white70),
+                        icon: const Icon(
+                          Icons.keyboard_arrow_down_rounded,
+                          color: Colors.white70,
+                        ),
                         tooltip: 'Hide tools',
-                        onPressed: () => setState(() => _showWhiteboardToolbar = false),
+                        onPressed: () =>
+                            setState(() => _showWhiteboardToolbar = false),
                       ),
                     ],
                   )
@@ -3579,20 +3733,32 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                   Row(
                     children: [
                       Icon(
-                        _isDrawingMode ? Icons.edit_rounded : Icons.visibility_rounded,
+                        _isDrawingMode
+                            ? Icons.edit_rounded
+                            : Icons.visibility_rounded,
                         color: Colors.white70,
                         size: 18,
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        _isDrawingMode ? 'Teacher drawing...' : 'Viewing Presentation',
-                        style: const TextStyle(color: Colors.white70, fontSize: 12),
+                        _isDrawingMode
+                            ? 'Teacher drawing...'
+                            : 'Viewing Presentation',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                        ),
                       ),
                       const SizedBox(width: 8),
                       IconButton(
-                        icon: const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.white70, size: 18),
+                        icon: const Icon(
+                          Icons.keyboard_arrow_down_rounded,
+                          color: Colors.white70,
+                          size: 18,
+                        ),
                         tooltip: 'Hide toolbar',
-                        onPressed: () => setState(() => _showWhiteboardToolbar = false),
+                        onPressed: () =>
+                            setState(() => _showWhiteboardToolbar = false),
                       ),
                     ],
                   ),
@@ -3600,7 +3766,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                   Row(
                     children: [
                       IconButton(
-                        icon: const Icon(Icons.arrow_back_ios_rounded, color: Colors.white),
+                        icon: const Icon(
+                          Icons.arrow_back_ios_rounded,
+                          color: Colors.white,
+                        ),
                         onPressed: _sharedDocPage > 1
                             ? () {
                                 final newPage = _sharedDocPage - 1;
@@ -3612,10 +3781,17 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                       ),
                       Text(
                         'Page $_sharedDocPage',
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
                       ),
                       IconButton(
-                        icon: const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white),
+                        icon: const Icon(
+                          Icons.arrow_forward_ios_rounded,
+                          color: Colors.white,
+                        ),
                         onPressed: () {
                           final newPage = _sharedDocPage + 1;
                           _webrtcRef.child('shared_document').update({
@@ -3633,18 +3809,24 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                     children: [
                       if (_hasPendingRecording) ...[
                         TextButton.icon(
-                          onPressed: _canSaveRecording ? _saveRecordingNow : null,
+                          onPressed: _canSaveRecording
+                              ? _saveRecordingNow
+                              : null,
                           icon: Icon(
                             _isSavingRecording
                                 ? Icons.hourglass_empty_rounded
                                 : Icons.save_rounded,
-                            color: _canSaveRecording ? Colors.greenAccent : Colors.white38,
+                            color: _canSaveRecording
+                                ? Colors.greenAccent
+                                : Colors.white38,
                             size: 18,
                           ),
                           label: Text(
                             _isSavingRecording ? 'Saving...' : 'Save Rec',
                             style: TextStyle(
-                              color: _canSaveRecording ? Colors.greenAccent : Colors.white38,
+                              color: _canSaveRecording
+                                  ? Colors.greenAccent
+                                  : Colors.white38,
                               fontSize: 12,
                               fontWeight: FontWeight.bold,
                             ),
@@ -3654,7 +3836,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                       ],
                       TextButton.icon(
                         onPressed: _stopSharingDocument,
-                        icon: const Icon(Icons.stop_rounded, color: Colors.redAccent, size: 18),
+                        icon: const Icon(
+                          Icons.stop_rounded,
+                          color: Colors.redAccent,
+                          size: 18,
+                        ),
                         label: const Text(
                           'Stop',
                           style: TextStyle(
@@ -3704,11 +3890,15 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     final List<Widget> items = [];
 
     if (_localRenderer.srcObject != null) {
-      items.add(_buildVideoStripItem('You', _localRenderer, mirror: _isFrontCamera));
+      items.add(
+        _buildVideoStripItem('You', _localRenderer, mirror: _isFrontCamera),
+      );
     }
 
     for (final entry in _connectedRemoteRenderers) {
-      items.add(_buildVideoStripItem(_remoteParticipantName(entry.key), entry.value));
+      items.add(
+        _buildVideoStripItem(_remoteParticipantName(entry.key), entry.value),
+      );
     }
 
     if (items.isEmpty) {
@@ -3728,7 +3918,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     );
   }
 
-  Widget _buildVideoStripItem(String name, RTCVideoRenderer renderer, {bool mirror = false}) {
+  Widget _buildVideoStripItem(
+    String name,
+    RTCVideoRenderer renderer, {
+    bool mirror = false,
+  }) {
     return Container(
       width: 140,
       decoration: BoxDecoration(
@@ -3753,7 +3947,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                 ),
                 child: Text(
                   name,
-                  style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w500),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
               ),
             ),
@@ -4001,9 +4199,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
           if (!widget.isTeacher && _showStudentReconnectAction) ...[
             const SizedBox(height: 18),
             ElevatedButton.icon(
-              onPressed: () => unawaited(
-                _restartStudentConnection(manual: true),
-              ),
+              onPressed: () =>
+                  unawaited(_restartStudentConnection(manual: true)),
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.accentRed,
                 foregroundColor: Colors.white,
@@ -4131,10 +4328,7 @@ class DrawingStroke {
     final ptsList = json['points'] as List? ?? [];
     final points = ptsList.map((p) {
       final map = p as Map;
-      return Offset(
-        (map['x'] as num).toDouble(),
-        (map['y'] as num).toDouble(),
-      );
+      return Offset((map['x'] as num).toDouble(), (map['y'] as num).toDouble());
     }).toList();
     return DrawingStroke(
       points: points,
@@ -4148,10 +4342,7 @@ class DrawingPainter extends CustomPainter {
   final List<DrawingStroke> completedStrokes;
   final DrawingStroke? currentStroke;
 
-  DrawingPainter({
-    required this.completedStrokes,
-    this.currentStroke,
-  });
+  DrawingPainter({required this.completedStrokes, this.currentStroke});
 
   @override
   void paint(Canvas canvas, Size size) {
