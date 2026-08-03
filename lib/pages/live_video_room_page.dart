@@ -154,6 +154,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   bool _isDocumentFullScreen = false;
   Future<void> _pdfPageSyncTask = Future<void>.value();
   bool _isDrawingMode = false;
+  bool _isSharedDocumentPickerOpen = false;
+  DateTime? _ignoreBackNavigationUntil;
   Color _selectedDrawColor = Colors.red;
   double _selectedDrawWidth = 4.0;
   int _lastSyncTime = 0;
@@ -2650,6 +2652,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         if (didPop) {
           return;
         }
+        final ignoreBackUntil = _ignoreBackNavigationUntil;
+        if (_isSharedDocumentPickerOpen ||
+            (ignoreBackUntil != null &&
+                DateTime.now().isBefore(ignoreBackUntil))) {
+          return;
+        }
         unawaited(_endCall());
       },
       child: Scaffold(
@@ -3376,16 +3384,36 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   }
 
   Future<void> _shareDocumentPicker() async {
+    if (_isSharedDocumentPickerOpen || _isProcessing) {
+      return;
+    }
+
+    FilePickerResult? result;
+    _isSharedDocumentPickerOpen = true;
     try {
-      final result = await FilePicker.platform.pickFiles(
+      result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['jpg', 'jpeg', 'png', 'pdf'],
       );
-
-      if (result == null || result.files.isEmpty) {
-        return;
+    } catch (e) {
+      if (mounted && !_hasEndedCall) {
+        _showSnackBar('Unable to open document picker: $e');
       }
+      return;
+    } finally {
+      _isSharedDocumentPickerOpen = false;
+      // Some Android system pickers forward their cancel/back event to the
+      // resumed Flutter route. Do not treat that same event as "End call".
+      _ignoreBackNavigationUntil = DateTime.now().add(
+        const Duration(milliseconds: 500),
+      );
+    }
 
+    if (!mounted || _hasEndedCall || result == null || result.files.isEmpty) {
+      return;
+    }
+
+    try {
       final file = result.files.first;
       final fileExtension = file.extension?.toLowerCase() ?? '';
       final isPdf = fileExtension == 'pdf';
