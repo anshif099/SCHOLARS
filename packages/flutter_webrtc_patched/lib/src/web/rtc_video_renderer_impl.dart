@@ -3,7 +3,6 @@ import 'dart:js_interop';
 import 'dart:ui_web' as web_ui;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 
 import 'package:dart_webrtc/dart_webrtc.dart';
 import 'package:web/web.dart' as web;
@@ -98,6 +97,14 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
     }
   }
 
+  Future<void> _tryPlayVideo(web.HTMLVideoElement element) async {
+    try {
+      await element.play().toDart;
+    } catch (_) {
+      // Autoplay rejection or stream pending on Safari is expected; continue gracefully.
+    }
+  }
+
   Future<void> _tryPlayAudio() async {
     final element = _audioElement;
     if (element == null || element.muted || element.volume <= 0) {
@@ -183,6 +190,7 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
     if (null != videoElement) {
       videoElement.srcObject = _videoStream;
       _applyDefaultVideoStyles(findHtmlView()!);
+      unawaited(_tryPlayVideo(videoElement));
     }
 
     value = value.copyWith(renderVideo: renderVideo);
@@ -235,6 +243,7 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
     if (null != videoElement) {
       videoElement.srcObject = _videoStream;
       _applyDefaultVideoStyles(findHtmlView()!);
+      unawaited(_tryPlayVideo(videoElement));
     }
 
     value = value.copyWith(renderVideo: renderVideo);
@@ -303,13 +312,17 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
         ..controls = false
         ..srcObject = _videoStream
         ..id = _elementIdForVideo
-        ..setAttribute('playsinline', 'true');
+        ..setAttribute('playsinline', 'true')
+        ..setAttribute('webkit-playsinline', 'true')
+        ..playsInline = true;
 
       _applyDefaultVideoStyles(element);
+      unawaited(_tryPlayVideo(element));
 
       _subscriptions.add(
         element.onCanPlay.listen((dynamic _) {
           _updateAllValues(element);
+          unawaited(_tryPlayVideo(element));
         }),
       );
 
@@ -323,17 +336,14 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
       // The error event fires when some form of error occurs while attempting to load or perform the media.
       _subscriptions.add(
         element.onError.listen((web.Event _) {
-          // The Event itself (_) doesn't contain info about the actual error.
-          // We need to look at the HTMLMediaElement.error.
-          // See: https://developer.mozilla.org/en-US/docs/Web/API/HTMLMediaElement/error
           final error = element.error;
-          print('RTCVideoRenderer: videoElement.onError, ${error.toString()}');
-          throw PlatformException(
-            code: _kErrorValueToErrorName[error!.code]!,
-            message:
-                error.message != '' ? error.message : _kDefaultErrorMessage,
-            details: _kErrorValueToErrorDescription[error.code],
-          );
+          final codeName = error != null
+              ? (_kErrorValueToErrorName[error.code] ?? 'MEDIA_ERR_UNKNOWN')
+              : 'MEDIA_ERR_UNKNOWN';
+          final message = error != null && error.message != ''
+              ? error.message
+              : _kDefaultErrorMessage;
+          print('RTCVideoRenderer: videoElement.onError, code=$codeName, message=$message');
         }),
       );
 

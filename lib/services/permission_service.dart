@@ -34,17 +34,7 @@ class PermissionService {
   static Future<CameraMicAccessResult> prepareCameraAndMicForCall() async {
     if (kIsWeb) {
       try {
-        final stream = await navigator.mediaDevices.getUserMedia(
-          <String, dynamic>{
-            'audio': true,
-            'video': <String, dynamic>{
-              'width': <String, dynamic>{'ideal': 640},
-              'height': <String, dynamic>{'ideal': 360},
-              'frameRate': <String, dynamic>{'ideal': 30},
-              'facingMode': 'user',
-            },
-          },
-        );
+        final stream = await _getWebUserMediaWithFallback();
         return CameraMicAccessResult(granted: true, preparedStream: stream);
       } catch (error) {
         return CameraMicAccessResult(
@@ -84,5 +74,34 @@ class PermissionService {
       Permission.microphone,
       Permission.notification,
     ].request();
+  }
+
+  static Future<MediaStream> _getWebUserMediaWithFallback() async {
+    // Attempt 1: Ideal resolution and frame rate
+    try {
+      return await navigator.mediaDevices.getUserMedia(<String, dynamic>{
+        'audio': true,
+        'video': <String, dynamic>{
+          'width': <String, dynamic>{'ideal': 640},
+          'height': <String, dynamic>{'ideal': 360},
+          'frameRate': <String, dynamic>{'ideal': 30},
+          'facingMode': 'user',
+        },
+      });
+    } catch (_) {}
+
+    // Attempt 2: Simplified facingMode constraint (iOS Safari compatible)
+    try {
+      return await navigator.mediaDevices.getUserMedia(<String, dynamic>{
+        'audio': true,
+        'video': <String, dynamic>{'facingMode': 'user'},
+      });
+    } catch (_) {}
+
+    // Attempt 3: Basic audio + video
+    return await navigator.mediaDevices.getUserMedia(<String, dynamic>{
+      'audio': true,
+      'video': true,
+    });
   }
 }

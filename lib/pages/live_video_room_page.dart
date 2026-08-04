@@ -495,35 +495,59 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   }
 
   Future<void> _setupLocalMedia() async {
-    final mediaConstraints = kIsWeb
-        ? <String, dynamic>{
-            'audio': true,
-            'video': <String, dynamic>{
-              'width': <String, dynamic>{'ideal': _callVideoWidth},
-              'height': <String, dynamic>{'ideal': _callVideoHeight},
-              'frameRate': <String, dynamic>{'ideal': _callVideoMaxFrameRate},
-              'facingMode': 'user',
-            },
-          }
-        : <String, dynamic>{
-            'audio': true,
-            'video': <String, dynamic>{
-              'mandatory': <String, dynamic>{
-                'minWidth': '$_callVideoWidth',
-                'minHeight': '$_callVideoHeight',
-                'maxWidth': '$_callVideoWidth',
-                'maxHeight': '$_callVideoHeight',
-                'minFrameRate': '$_callVideoMinFrameRate',
-                'maxFrameRate': '$_callVideoMaxFrameRate',
+    if (_localStream == null) {
+      if (kIsWeb) {
+        try {
+          _localStream = await navigator.mediaDevices.getUserMedia(
+            <String, dynamic>{
+              'audio': true,
+              'video': <String, dynamic>{
+                'width': <String, dynamic>{'ideal': _callVideoWidth},
+                'height': <String, dynamic>{'ideal': _callVideoHeight},
+                'frameRate': <String, dynamic>{'ideal': _callVideoMaxFrameRate},
+                'facingMode': 'user',
               },
-              'facingMode': 'user',
-              'optional': <dynamic>[],
             },
-          };
+          );
+        } catch (_) {
+          try {
+            _localStream = await navigator.mediaDevices.getUserMedia(
+              <String, dynamic>{
+                'audio': true,
+                'video': <String, dynamic>{'facingMode': 'user'},
+              },
+            );
+          } catch (_) {
+            _localStream = await navigator.mediaDevices.getUserMedia(
+              <String, dynamic>{
+                'audio': true,
+                'video': true,
+              },
+            );
+          }
+        }
+      } else {
+        final mediaConstraints = <String, dynamic>{
+          'audio': true,
+          'video': <String, dynamic>{
+            'mandatory': <String, dynamic>{
+              'minWidth': '$_callVideoWidth',
+              'minHeight': '$_callVideoHeight',
+              'maxWidth': '$_callVideoWidth',
+              'maxHeight': '$_callVideoHeight',
+              'minFrameRate': '$_callVideoMinFrameRate',
+              'maxFrameRate': '$_callVideoMaxFrameRate',
+            },
+            'facingMode': 'user',
+            'optional': <dynamic>[],
+          },
+        };
+        _localStream = await navigator.mediaDevices.getUserMedia(
+          mediaConstraints,
+        );
+      }
+    }
 
-    _localStream ??= await navigator.mediaDevices.getUserMedia(
-      mediaConstraints,
-    );
     _localAudioTrack = _localStream!.getAudioTracks().isNotEmpty
         ? _localStream!.getAudioTracks().first
         : null;
@@ -3034,6 +3058,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   }
 
   Widget _buildMainVideoPanel() {
+    if (_hasEndedCall && _errorMessage != null) {
+      return _buildRemotePlaceholder();
+    }
+
     if (_isInitializing) {
       return const Center(
         child: CircularProgressIndicator(color: Colors.white),
@@ -4359,7 +4387,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   }
 
   Widget _buildLocalVideoView({required bool expanded}) {
-    if (!_renderersInitialized ||
+    if (_hasEndedCall ||
+        !_renderersInitialized ||
         _isVideoOff ||
         _localRenderer.srcObject == null) {
       return _buildLocalPlaceholder(expanded: expanded);
