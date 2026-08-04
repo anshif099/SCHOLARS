@@ -7,10 +7,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../components/active_student_session_dialog.dart';
 import '../components/login_option_card.dart';
 import '../services/call_notification_service.dart';
-import '../services/student_session_service.dart';
 import '../theme/app_theme.dart';
 import 'admin_dashboard_page.dart';
 import 'student_dashboard_page.dart';
@@ -300,18 +298,12 @@ class _LandingPageState extends State<LandingPage>
         // Try Student Login
         final studentData = await _findStudentByLoginId(normalized);
         if (studentData != null) {
-          final sessionResult = await StudentSessionService.claim(
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setBool('is_student_logged_in', true);
+          await prefs.setString(
+            'student_data',
             studentData['key'].toString(),
           );
-          if (!sessionResult.claimed) {
-            if (!mounted) return;
-            setState(() => _isLoading = false);
-            await showActiveStudentSessionDialog(
-              context,
-              sessionResult.activeSession,
-            );
-            return;
-          }
 
           final notificationsReady = await _activateNotifications(
             studentData['key'].toString(),
@@ -364,10 +356,6 @@ class _LandingPageState extends State<LandingPage>
         _showError('Invalid ID. Please check and try again.');
         setState(() => _isLoading = false);
       }
-    } on StudentSessionException catch (e) {
-      debugPrint('Secure student login failed: $e');
-      _showError(e.message);
-      if (mounted) setState(() => _isLoading = false);
     } catch (e) {
       debugPrint('Login failed: $e');
       _showError('An error occurred during login. Please try again.');

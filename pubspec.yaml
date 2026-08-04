@@ -36,13 +36,10 @@ dependencies:
   cupertino_icons: ^1.0.8
   google_fonts: ^6.2.1
   package_info_plus: ^8.3.0
-  device_info_plus: ^11.5.0
   shared_preferences: ^2.5.3
   firebase_core: ^4.7.0
   firebase_auth: ^6.2.0
   firebase_database: ^12.3.0
-  cloud_functions: 6.0.4
-  crypto: ^3.0.7
   permission_handler: any
   flutter_callkit_incoming: any
   firebase_messaging: any
