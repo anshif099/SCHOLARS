@@ -270,7 +270,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     }
 
     final fallbackId =
-        'student_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(1 << 32)}';
+        'student_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(1 << 30)}';
     return _sanitizeFirebaseKey(fallbackId);
   }
 
@@ -284,7 +284,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   }
 
   String _buildConnectionId() {
-    return '${DateTime.now().microsecondsSinceEpoch}_${Random().nextInt(1 << 32)}';
+    return '${DateTime.now().microsecondsSinceEpoch}_${Random().nextInt(1 << 30)}';
   }
 
   String _sanitizeFirebaseKey(String value) {
@@ -319,6 +319,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   }
 
   Future<void> _enableScreenAwake() async {
+    if (kIsWeb) return;
     try {
       await WakelockPlus.enable();
     } catch (error, stackTrace) {
