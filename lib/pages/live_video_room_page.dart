@@ -297,7 +297,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
 
   bool _claimSession() {
     if (LiveVideoRoomPage._activeSessionKeys.contains(_sessionKey)) {
-      return false;
+      if (widget.isTeacher) {
+        LiveVideoRoomPage._activeSessionKeys.remove(_sessionKey);
+      } else {
+        return false;
+      }
     }
 
     LiveVideoRoomPage._activeSessionKeys.add(_sessionKey);
@@ -406,18 +410,22 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   }
 
   Future<void> _registerParticipant() async {
-    final participantRef = _participantsRef.child(_localParticipantId);
+    try {
+      final participantRef = _participantsRef.child(_localParticipantId);
 
-    await participantRef.onDisconnect().remove();
-    await participantRef.set(<String, dynamic>{
-      'id': _localParticipantId,
-      'name': _localParticipantName,
-      'role': _localRole,
-      'connection_id': _connectionId,
-      'joined_at': ServerValue.timestamp,
-      'mic_enabled': !_isMicMuted,
-      'video_enabled': !_isVideoOff,
-    });
+      await participantRef.onDisconnect().remove();
+      await participantRef.set(<String, dynamic>{
+        'id': _localParticipantId,
+        'name': _localParticipantName,
+        'role': _localRole,
+        'connection_id': _connectionId,
+        'joined_at': ServerValue.timestamp,
+        'mic_enabled': !_isMicMuted,
+        'video_enabled': !_isVideoOff,
+      });
+    } catch (error, stackTrace) {
+      _reportNonFatalError('register participant', error, stackTrace);
+    }
   }
 
   Future<void> _removeParticipantRegistrationIfCurrent() async {
@@ -1199,9 +1207,13 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   }
 
   Future<void> _resetTeacherSession() async {
-    await _webrtcRef.remove();
-    await _participantsRef.remove();
-    await _webrtcRef.child('status').set('waiting_for_students');
+    try {
+      await _webrtcRef.remove();
+      await _participantsRef.remove();
+      await _webrtcRef.child('status').set('waiting_for_students');
+    } catch (error, stackTrace) {
+      _reportNonFatalError('reset teacher session', error, stackTrace);
+    }
   }
 
   Future<void> _createAndSendOffer(String peerId) async {

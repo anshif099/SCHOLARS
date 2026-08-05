@@ -1713,25 +1713,43 @@ class _TeacherDashboardPageState extends State<TeacherDashboardPage> {
                             return;
                           }
 
+                          final rawClassId = widget.teacherData['class_id']?.toString() ??
+                              widget.teacherData['key']?.toString() ??
+                              'class_1';
+                          final sanitizedClassId = rawClassId
+                              .trim()
+                              .replaceAll(RegExp(r'[.#$\[\]/]'), '_')
+                              .replaceAll(RegExp(r'\s+'), '_');
+                          final classId =
+                              sanitizedClassId.isEmpty ? 'class_1' : sanitizedClassId;
+
                           final topic = _topicController.text.trim().isEmpty
                               ? 'General Class'
                               : _topicController.text.trim();
+                          final teacherName = widget.teacherData['name']?.toString();
 
                           try {
+                            final classData = <String, dynamic>{
+                              'is_live': false,
+                              'topic': topic,
+                              'teacher_name':
+                                  (teacherName != null && teacherName.trim().isNotEmpty)
+                                      ? teacherName.trim()
+                                      : 'Teacher',
+                              'started_at': DateTime.now().millisecondsSinceEpoch,
+                              'status': 'preparing',
+                            };
+                            if (_selectedSubjectId != null &&
+                                _selectedSubjectId!.trim().isNotEmpty) {
+                              classData['subject_id'] = _selectedSubjectId!.trim();
+                            }
+
                             // Signal the class only after media access succeeds.
                             await FirebaseDatabase.instance
                                 .ref()
                                 .child('live_classes')
                                 .child(classId)
-                                .set({
-                                  'is_live': false,
-                                  'topic': topic,
-                                  'subject_id': _selectedSubjectId,
-                                  'teacher_name': widget.teacherData['name'],
-                                  'started_at':
-                                      DateTime.now().millisecondsSinceEpoch,
-                                  'status': 'preparing',
-                                });
+                                .set(classData);
 
                             if (!context.mounted) {
                               PermissionService.stopPreparedStream(
