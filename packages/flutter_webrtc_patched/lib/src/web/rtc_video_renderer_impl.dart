@@ -99,9 +99,29 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
 
   Future<void> _tryPlayVideo(web.HTMLVideoElement element) async {
     try {
+      element.muted = true;
+      element.setAttribute('playsinline', 'true');
+      element.setAttribute('webkit-playsinline', 'true');
+      element.playsInline = true;
       await element.play().toDart;
     } catch (_) {
-      // Autoplay rejection or stream pending on Safari is expected; continue gracefully.
+      // Autoplay on Safari iOS requires element to be in DOM; retry after micro-delays.
+      for (final ms in [50, 150, 300, 600, 1000]) {
+        await Future.delayed(Duration(milliseconds: ms));
+        if (element.paused && element.srcObject != null) {
+          try {
+            await element.play().toDart;
+            break;
+          } catch (_) {}
+        }
+      }
+    }
+  }
+
+  void ensureVideoPlaying() {
+    final videoElement = findHtmlView();
+    if (videoElement != null) {
+      unawaited(_tryPlayVideo(videoElement));
     }
   }
 
@@ -367,7 +387,10 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
       ..style.objectFit = _objectFit
       ..style.border = 'none'
       ..style.width = '100%'
-      ..style.height = '100%';
+      ..style.height = '100%'
+      ..style.position = 'absolute'
+      ..style.top = '0'
+      ..style.left = '0';
   }
 
   @override

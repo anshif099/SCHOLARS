@@ -66,6 +66,9 @@ class RTCVideoViewState extends State<RTCVideoView> {
   }
 
   Widget buildVideoElementView() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      videoRenderer.ensureVideoPlaying();
+    });
     return HtmlElementView(viewType: videoRenderer.viewType);
   }
 
