@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:sentry_flutter/sentry_flutter.dart';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -64,7 +66,19 @@ void main() async {
     debugPrint("Wakelock enabling failed: $e");
   }
 
-  runApp(const ScholarsApp());
+  await SentryFlutter.init(
+    (options) {
+      options.dsn =
+          'https://0f2e175f3c41f66ad597dceb81e2b5c0@o4511873274150912.ingest.us.sentry.io/4511873280638976';
+      // Capture 100% of transactions for performance monitoring.
+      // Reduce this in production to a lower value (e.g. 0.2).
+      options.tracesSampleRate = 1.0;
+      // Profiling sample rate relative to tracesSampleRate.
+      // Reduce in production to avoid overhead.
+      options.profilesSampleRate = 1.0;
+    },
+    appRunner: () => runApp(const ScholarsApp()),
+  );
 }
 
 /// Global navigator key so call-acceptance navigation works reliably
