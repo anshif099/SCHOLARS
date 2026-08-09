@@ -2840,7 +2840,9 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                           .child('subject_notes')
                           .child(widget.classId)
                           .child(widget.subjectKey);
-                      ref.keepSynced(true);
+                      if (!kIsWeb) {
+                        ref.keepSynced(true);
+                      }
                       return ref.onValue;
                     },
                     builder: (context, snapshot) {
