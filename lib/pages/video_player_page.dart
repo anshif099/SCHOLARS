@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_pdfview/flutter_pdfview.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 import '../services/video_web_helper.dart';
 import '../theme/app_theme.dart';
@@ -72,8 +73,13 @@ class VideoPlayerPage extends StatefulWidget {
 }
 
 class _VideoPlayerPageState extends State<VideoPlayerPage> {
+  static const Duration _initializationTimeout = Duration(seconds: 20);
+  static const Duration _bufferingTimeout = Duration(seconds: 30);
+
   VideoPlayerController? _videoPlayerController;
   ChewieController? _chewieController;
+  Timer? _bufferingTimer;
+  Duration _lastPlaybackPosition = Duration.zero;
   bool _isLoading = true;
   String? _errorMessage;
   String? _tempFilePath;
@@ -89,13 +95,12 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   @override
   void initState() {
     super.initState();
-    _presentationEvents = List<Map<String, dynamic>>.from(
-      widget.presentationEvents,
-    )..sort(
-        (a, b) => ((a['offset_ms'] as num?)?.toInt() ?? 0).compareTo(
-          (b['offset_ms'] as num?)?.toInt() ?? 0,
-        ),
-      );
+    _presentationEvents =
+        List<Map<String, dynamic>>.from(widget.presentationEvents)..sort(
+          (a, b) => ((a['offset_ms'] as num?)?.toInt() ?? 0).compareTo(
+            (b['offset_ms'] as num?)?.toInt() ?? 0,
+          ),
+        );
     _initializePlayer();
   }
 
@@ -158,15 +163,19 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
         Uri.parse(url),
         videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
       );
-      // Wait for initialization with an 8-second timeout
-      await _videoPlayerController!.initialize().timeout(const Duration(seconds: 8));
+      await _videoPlayerController!.initialize().timeout(
+        _initializationTimeout,
+      );
       await _videoPlayerController!.setLooping(false);
       await _videoPlayerController!.setPlaybackSpeed(1);
+      if (!mounted) {
+        await _disposePlayerControllers();
+        return;
+      }
       _createChewieController();
-
-      if (!mounted) return;
       setState(() => _isLoading = false);
     } catch (e) {
+      await _disposePlayerControllers();
       // Fallback: If on Web, try fetching the video as a local Blob URL
       if (kIsWeb) {
         try {
@@ -175,24 +184,33 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
             Uri.parse(blobUrl),
             videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
           );
-          // Wait for initialization of Blob URL with a 5-second timeout
-          await _videoPlayerController!.initialize().timeout(const Duration(seconds: 5));
+          await _videoPlayerController!.initialize().timeout(
+            _initializationTimeout,
+          );
           await _videoPlayerController!.setLooping(false);
           await _videoPlayerController!.setPlaybackSpeed(1);
+          if (!mounted) {
+            await _disposePlayerControllers();
+            return;
+          }
           _createChewieController();
-
-          if (!mounted) return;
           setState(() => _isLoading = false);
           return;
         } catch (blobError) {
           debugPrint('Blob URL fallback failed: $blobError');
+          await _disposePlayerControllers();
         }
       }
 
+      debugPrint(
+        'Recorded video initialization failed '
+        '(host: ${Uri.tryParse(url)?.host}, mime: ${widget.mimeType}): $e',
+      );
       if (!mounted) return;
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Could not load this video. Please try again later.';
+        _errorMessage =
+            'The video server did not respond or this device could not decode the recording.';
       });
     }
   }
@@ -203,29 +221,89 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       final bytes = base64Decode(base64Data);
       final tempDir = await getTemporaryDirectory();
       final tempFile = File(
-          '${tempDir.path}/playback_${DateTime.now().millisecondsSinceEpoch}.mp4');
+        '${tempDir.path}/playback_${DateTime.now().millisecondsSinceEpoch}.mp4',
+      );
       await tempFile.writeAsBytes(bytes);
       _tempFilePath = tempFile.path;
 
       _videoPlayerController = VideoPlayerController.file(tempFile);
       await _prepareVideoController();
     } catch (e) {
+      await _disposePlayerControllers();
+      debugPrint('Legacy recorded video initialization failed: $e');
       if (!mounted) return;
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Failed to load video: $e';
+        _errorMessage = 'The saved recording could not be opened.';
       });
     }
   }
 
   Future<void> _prepareVideoController() async {
-    await _videoPlayerController!.initialize();
+    await _videoPlayerController!.initialize().timeout(_initializationTimeout);
     await _videoPlayerController!.setLooping(false);
     await _videoPlayerController!.setPlaybackSpeed(1);
+    if (!mounted) {
+      await _disposePlayerControllers();
+      return;
+    }
     _createChewieController();
-
-    if (!mounted) return;
     setState(() => _isLoading = false);
+  }
+
+  Future<void> _disposePlayerControllers() async {
+    _bufferingTimer?.cancel();
+    _bufferingTimer = null;
+
+    final chewieController = _chewieController;
+    final videoController = _videoPlayerController;
+    _chewieController = null;
+    _videoPlayerController = null;
+
+    chewieController?.dispose();
+    if (videoController != null) {
+      videoController.removeListener(_handlePlaybackProgress);
+      await videoController.dispose();
+    }
+  }
+
+  Future<void> _retryPlayback() async {
+    if (!mounted) return;
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+    await _disposePlayerControllers();
+    if (!mounted) return;
+    await _initializePlayer();
+  }
+
+  void _openCompatibilityPlayer() {
+    final url = widget.videoUrl;
+    if (url == null || url.isEmpty) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => WebmVideoPlayerPage(
+          videoUrl: url,
+          title: widget.title,
+          presentationEvents: _presentationEvents,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openInBrowser() async {
+    final url = widget.videoUrl;
+    final uri = url == null ? null : Uri.tryParse(url);
+    if (uri != null && await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+      return;
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open the video in a browser.')),
+      );
+    }
   }
 
   void _createChewieController() {
@@ -248,11 +326,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       placeholder: Container(
         color: Colors.black,
         child: const Center(
-            child: CircularProgressIndicator(color: Colors.white)),
+          child: CircularProgressIndicator(color: Colors.white),
+        ),
       ),
-      bufferingBuilder: (context) => const Center(
-        child: CircularProgressIndicator(color: Colors.white),
-      ),
+      bufferingBuilder: (context) =>
+          const Center(child: CircularProgressIndicator(color: Colors.white)),
       errorBuilder: (context, errorMessage) {
         return Center(
           child: Text(
@@ -263,17 +341,32 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       },
     );
 
+    _lastPlaybackPosition = Duration.zero;
+    _bufferingTimer?.cancel();
+    _bufferingTimer = null;
     _videoPlayerController!.addListener(_handlePlaybackProgress);
     _handlePlaybackProgress();
   }
 
   void _handlePlaybackProgress() {
     final controller = _videoPlayerController;
-    if (!mounted || controller == null || !controller.value.isInitialized) {
+    if (!mounted || controller == null) {
       return;
     }
 
-    final positionMs = controller.value.position.inMilliseconds;
+    final value = controller.value;
+    if (value.hasError) {
+      _showPlaybackError(
+        'This recording could not be played on this device or network.',
+        details: value.errorDescription,
+      );
+      return;
+    }
+    if (!value.isInitialized) return;
+
+    _monitorBuffering(controller, value);
+
+    final positionMs = value.position.inMilliseconds;
     var eventIndex = -1;
     for (var index = 0; index < _presentationEvents.length; index++) {
       final offset =
@@ -294,6 +387,56 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     if (activeEvent?['file_type']?.toString() == 'pdf') {
       unawaited(_preparePresentationPdf(activeEvent!));
     }
+  }
+
+  void _monitorBuffering(
+    VideoPlayerController controller,
+    VideoPlayerValue value,
+  ) {
+    if (_errorMessage != null) {
+      _bufferingTimer?.cancel();
+      _bufferingTimer = null;
+      return;
+    }
+
+    final madeProgress =
+        value.position > _lastPlaybackPosition + const Duration(seconds: 1);
+    if (madeProgress) {
+      _lastPlaybackPosition = value.position;
+      _bufferingTimer?.cancel();
+      _bufferingTimer = null;
+    }
+
+    if (!value.isBuffering) {
+      _bufferingTimer?.cancel();
+      _bufferingTimer = null;
+      return;
+    }
+
+    _bufferingTimer ??= Timer(_bufferingTimeout, () {
+      if (!mounted ||
+          !identical(_videoPlayerController, controller) ||
+          !controller.value.isBuffering) {
+        return;
+      }
+      _showPlaybackError(
+        'The video stopped buffering. Try again, switch networks, or use the compatibility player.',
+      );
+    });
+  }
+
+  void _showPlaybackError(String message, {String? details}) {
+    if (_errorMessage != null || !mounted) return;
+    _bufferingTimer?.cancel();
+    _bufferingTimer = null;
+    if (details != null && details.isNotEmpty) {
+      debugPrint('Recorded video playback error: $details');
+    }
+    unawaited(_videoPlayerController?.pause());
+    setState(() {
+      _isLoading = false;
+      _errorMessage = message;
+    });
   }
 
   Future<void> _preparePresentationPdf(Map<String, dynamic> event) async {
@@ -479,7 +622,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.description_rounded, color: Colors.white54, size: 56),
+          const Icon(
+            Icons.description_rounded,
+            color: Colors.white54,
+            size: 56,
+          ),
           const SizedBox(height: 12),
           Text(
             message,
@@ -493,9 +640,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
 
   @override
   void dispose() {
-    _videoPlayerController?.removeListener(_handlePlaybackProgress);
-    _videoPlayerController?.dispose();
+    _bufferingTimer?.cancel();
     _chewieController?.dispose();
+    _videoPlayerController?.removeListener(_handlePlaybackProgress);
+    unawaited(_videoPlayerController?.dispose());
     // Clean up temp file (only used for Base64 fallback)
     if (_tempFilePath != null) {
       try {
@@ -524,33 +672,76 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
         title: Text(
           widget.title,
           style: GoogleFonts.poppins(
-              color: Colors.white,
-              fontSize: 16,
-              fontWeight: FontWeight.w600),
+            color: Colors.white,
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
       body: Center(
         child: _isLoading
             ? const CircularProgressIndicator(color: Colors.white)
             : _errorMessage != null
-                ? Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.videocam_off_rounded,
-                            color: Colors.white38, size: 64),
-                        const SizedBox(height: 16),
-                        Text(
-                          _errorMessage!,
-                          textAlign: TextAlign.center,
-                          style: GoogleFonts.poppins(
-                              color: Colors.white70, fontSize: 14),
-                        ),
-                      ],
-                    ),
-                  )
-                : _buildPlayer(),
+            ? _buildPlayerError()
+            : _buildPlayer(),
+      ),
+    );
+  }
+
+  Widget _buildPlayerError() {
+    final hasUrl = widget.videoUrl?.isNotEmpty == true;
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(
+            Icons.videocam_off_rounded,
+            color: Colors.white38,
+            size: 64,
+          ),
+          const SizedBox(height: 16),
+          Text(
+            _errorMessage!,
+            textAlign: TextAlign.center,
+            style: GoogleFonts.poppins(
+              color: Colors.white70,
+              fontSize: 14,
+              height: 1.5,
+            ),
+          ),
+          const SizedBox(height: 24),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              ElevatedButton.icon(
+                onPressed: _retryPlayback,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Try again'),
+              ),
+              if (hasUrl && !kIsWeb)
+                OutlinedButton.icon(
+                  onPressed: _openCompatibilityPlayer,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: const Icon(Icons.smart_display_outlined),
+                  label: const Text('Compatibility player'),
+                ),
+              if (hasUrl)
+                OutlinedButton.icon(
+                  onPressed: _openInBrowser,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: const Icon(Icons.open_in_browser_rounded),
+                  label: const Text('Open in browser'),
+                ),
+            ],
+          ),
+        ],
       ),
     );
   }

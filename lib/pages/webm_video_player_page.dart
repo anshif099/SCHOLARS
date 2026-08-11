@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -30,9 +31,14 @@ class WebmVideoPlayerPage extends StatefulWidget {
 }
 
 class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
+  static const Duration _videoLoadTimeout = Duration(seconds: 30);
+
   WebViewController? _controller;
   bool _isLoading = true;
   bool _isIOS = false;
+  bool _videoWasReady = false;
+  String? _errorMessage;
+  Timer? _loadTimer;
 
   @override
   void initState() {
@@ -49,6 +55,10 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
   }
 
   void _initWebView() {
+    _loadTimer?.cancel();
+    _videoWasReady = false;
+    _errorMessage = null;
+
     final htmlContent = _buildHtmlPlayer(
       widget.videoUrl,
       widget.presentationEvents,
@@ -56,30 +66,123 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
     final controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(Colors.black)
+      ..addJavaScriptChannel(
+        'VideoPlayerStatus',
+        onMessageReceived: _handleVideoStatus,
+      )
       ..setNavigationDelegate(
         NavigationDelegate(
-          onPageFinished: (_) {
-            if (mounted) setState(() => _isLoading = false);
-          },
           onWebResourceError: (error) {
             debugPrint('WebView error: ${error.description}');
-            if (mounted) setState(() => _isLoading = false);
+            if (error.isForMainFrame == true) {
+              _showPlaybackError(
+                'The video page could not be opened. Check the internet connection and try again.',
+              );
+            }
           },
         ),
       )
       ..loadHtmlString(htmlContent, baseUrl: null);
 
-    setState(() {
-      _controller = controller;
+    if (mounted) {
+      setState(() {
+        _controller = controller;
+        _isLoading = true;
+      });
+    }
+    _armLoadTimeout();
+  }
+
+  void _handleVideoStatus(JavaScriptMessage message) {
+    if (!mounted) return;
+
+    try {
+      final payload = jsonDecode(message.message);
+      if (payload is! Map) return;
+      final status = payload['status']?.toString();
+      final details = payload['details']?.toString();
+
+      switch (status) {
+        case 'ready':
+        case 'playing':
+          _loadTimer?.cancel();
+          _loadTimer = null;
+          _videoWasReady = true;
+          if (_isLoading || _errorMessage != null) {
+            setState(() {
+              _isLoading = false;
+              _errorMessage = null;
+            });
+          }
+          break;
+        case 'waiting':
+        case 'stalled':
+          _armLoadTimeout(buffering: _videoWasReady);
+          break;
+        case 'error':
+          debugPrint('HTML video playback error: $details');
+          _showPlaybackError(_playbackErrorMessage(details));
+          break;
+      }
+    } catch (error) {
+      debugPrint('Invalid video status message: $error');
+    }
+  }
+
+  String _playbackErrorMessage(String? details) {
+    if (details?.contains('code 2') == true) {
+      return 'The video could not be downloaded on this network. Try Wi-Fi or mobile data, then try again.';
+    }
+    if (details?.contains('code 3') == true) {
+      return 'This device could not decode the recording. Try opening it in your browser.';
+    }
+    if (details?.contains('code 4') == true) {
+      return 'This video format is not supported on this device. Try opening it in your browser.';
+    }
+    return 'This recording could not be played on this device or network.';
+  }
+
+  void _armLoadTimeout({bool buffering = false}) {
+    if (_loadTimer?.isActive == true) return;
+    _loadTimer = Timer(_videoLoadTimeout, () {
+      if (!mounted) return;
+      _showPlaybackError(
+        buffering
+            ? 'The video stopped buffering. Try again or open it in your browser.'
+            : 'The video server is taking too long to respond. Try another network or open it in your browser.',
+      );
     });
+  }
+
+  void _showPlaybackError(String message) {
+    _loadTimer?.cancel();
+    _loadTimer = null;
+    if (!mounted) return;
+    setState(() {
+      _isLoading = false;
+      _errorMessage = message;
+    });
+  }
+
+  void _retryPlayback() {
+    if (!mounted) return;
+    setState(() {
+      _controller = null;
+      _isLoading = true;
+      _errorMessage = null;
+    });
+    _initWebView();
   }
 
   String _buildHtmlPlayer(
     String videoUrl,
     List<Map<String, dynamic>> presentationEvents,
   ) {
-    // Escape double-quotes in URL to safely embed in HTML attribute
-    final safeUrl = videoUrl.replaceAll('"', '&quot;');
+    final safeUrl = videoUrl
+        .replaceAll('&', '&amp;')
+        .replaceAll('"', '&quot;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;');
     final eventsJson = jsonEncode(presentationEvents).replaceAll('</', r'<\/');
     return '''
 <!DOCTYPE html>
@@ -200,11 +303,32 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
       }
     }
 
+    function reportStatus(status, details) {
+      if (window.VideoPlayerStatus) {
+        VideoPlayerStatus.postMessage(JSON.stringify({
+          status: status,
+          details: details || ''
+        }));
+      }
+    }
+
     v.addEventListener('loadedmetadata', function() {
+      reportStatus('ready');
       syncPresentation();
       v.play().catch(function() {
         // Autoplay may be blocked — user can tap play manually
       });
+    });
+    v.addEventListener('canplay', function() { reportStatus('ready'); });
+    v.addEventListener('playing', function() { reportStatus('playing'); });
+    v.addEventListener('waiting', function() { reportStatus('waiting'); });
+    v.addEventListener('stalled', function() { reportStatus('stalled'); });
+    v.addEventListener('error', function() {
+      var mediaError = v.error;
+      reportStatus(
+        'error',
+        mediaError ? 'MediaError code ' + mediaError.code : 'Unknown media error'
+      );
     });
     v.addEventListener('timeupdate', syncPresentation);
     v.addEventListener('seeking', syncPresentation);
@@ -223,11 +347,18 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-                'Could not open browser. Please copy the link and open it manually.'),
+              'Could not open browser. Please copy the link and open it manually.',
+            ),
           ),
         );
       }
     }
+  }
+
+  @override
+  void dispose() {
+    _loadTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -262,21 +393,69 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
 
     if (_controller == null) {
       return const Center(
-          child: CircularProgressIndicator(color: Colors.white));
+        child: CircularProgressIndicator(color: Colors.white),
+      );
+    }
+
+    if (_errorMessage != null) {
+      return _buildPlaybackError();
     }
 
     return Stack(
       children: [
         WebViewWidget(controller: _controller!),
         if (_isLoading)
-          const Center(
-              child: CircularProgressIndicator(color: Colors.white)),
+          const Center(child: CircularProgressIndicator(color: Colors.white)),
       ],
     );
   }
 
-  /// iOS cannot play WebM in WKWebView — prompt user to open in a browser.
-  /// Chrome/Firefox on iOS DO support WebM.
+  Widget _buildPlaybackError() {
+    return Padding(
+      padding: const EdgeInsets.all(28),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(
+            Icons.video_file_outlined,
+            color: Colors.white54,
+            size: 64,
+          ),
+          const SizedBox(height: 18),
+          Text(
+            _errorMessage!,
+            textAlign: TextAlign.center,
+            style: GoogleFonts.poppins(
+              color: Colors.white70,
+              fontSize: 14,
+              height: 1.5,
+            ),
+          ),
+          const SizedBox(height: 24),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              ElevatedButton.icon(
+                onPressed: _retryPlayback,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Try again'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _openInBrowser,
+                style: OutlinedButton.styleFrom(foregroundColor: Colors.white),
+                icon: const Icon(Icons.open_in_browser_rounded),
+                label: const Text('Open in browser'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// WebM support varies by iOS version, so offer the system browser.
   Widget _buildIOSFallback() {
     return Padding(
       padding: const EdgeInsets.all(32),
@@ -290,8 +469,11 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
               color: Colors.white10,
               borderRadius: BorderRadius.circular(20),
             ),
-            child: const Icon(Icons.open_in_browser_rounded,
-                color: Colors.white54, size: 44),
+            child: const Icon(
+              Icons.open_in_browser_rounded,
+              color: Colors.white54,
+              size: 44,
+            ),
           ),
           const SizedBox(height: 24),
           Text(
@@ -304,7 +486,7 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
           ),
           const SizedBox(height: 12),
           Text(
-            'This recording is in WebM format. Safari cannot play WebM, but Chrome or Firefox can.\n\nTap below to open in your browser.',
+            'This recording is in WebM format, and playback support varies by iOS version.\n\nTap below to try it in your browser.',
             textAlign: TextAlign.center,
             style: GoogleFonts.poppins(
               color: Colors.white60,
@@ -317,10 +499,10 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFFE53935),
               foregroundColor: Colors.white,
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
+              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14)),
+                borderRadius: BorderRadius.circular(14),
+              ),
             ),
             onPressed: _openInBrowser,
             icon: const Icon(Icons.open_in_browser_rounded),
