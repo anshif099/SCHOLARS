@@ -73,6 +73,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
   final Map<String, RTCVideoRenderer> _remoteRenderers =
       <String, RTCVideoRenderer>{};
+  final Map<String, Future<RTCVideoRenderer?>> _remoteRendererInitializations =
+      <String, Future<RTCVideoRenderer?>>{};
   final Map<String, _PeerSession> _peerSessions = <String, _PeerSession>{};
   final Set<String> _teacherPeerStartInProgress = <String>{};
   final Map<String, dynamic> _sdpConstraints = <String, dynamic>{
@@ -631,7 +633,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
 
     peerConnection.onTrack = (event) {
       if (event.streams.isNotEmpty) {
-        _attachRemoteStream(peerId, event.streams.first);
+        _attachRemoteStream(session, event.streams.first);
       }
     };
 
@@ -1278,62 +1280,140 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       ..addAll(remainingCandidates);
   }
 
-  void _attachRemoteStream(String peerId, MediaStream stream) {
-    unawaited(_attachRemoteStreamInternal(peerId, stream));
+  void _attachRemoteStream(_PeerSession session, MediaStream stream) {
+    unawaited(_attachRemoteStreamInternal(session, stream));
   }
 
   Future<void> _attachRemoteStreamInternal(
-    String peerId,
+    _PeerSession session,
     MediaStream stream,
   ) async {
-    if (_hasEndedCall || _isCleaningUp) {
+    final peerId = session.peerId;
+    if (!_canAttachRemoteStream(session)) {
       return;
     }
 
-    var renderer = _remoteRenderers[peerId];
-    if (renderer == null) {
-      renderer = RTCVideoRenderer();
-      _remoteRenderers[peerId] = renderer;
-      await renderer.initialize();
+    try {
+      final renderer = await _getOrCreateRemoteRenderer(peerId);
+      if (renderer == null || !_canAttachRemoteStream(session)) {
+        return;
+      }
+
+      renderer.srcObject = stream;
+
+      if (kIsWeb) {
+        renderer.muted = !_isSpeakerOn;
+        renderer.volume = _isSpeakerOn ? 1.0 : 0.0;
+      } else {
+        for (final audioTrack in stream.getAudioTracks()) {
+          audioTrack.enabled = true;
+          try {
+            await Helper.setVolume(1.0, audioTrack);
+          } catch (error, stackTrace) {
+            _reportNonFatalError(
+              'set incoming audio track volume',
+              error,
+              stackTrace,
+            );
+          }
+        }
+        if (_isSpeakerOn) {
+          await _maximizeAndroidSpeakerVolume();
+        }
+      }
+
+      if (!_canAttachRemoteStream(session)) {
+        return;
+      }
+
+      if (kIsWeb && _mediaRecorder != null) {
+        _webRecordingHelper.addRemoteStream(stream);
+      }
+
+      setState(() {
+        _focusedRemotePeerId ??= peerId;
+        _isRemoteConnected = true;
+        _errorMessage = null;
+        _statusMessage = _connectedStatusMessage();
+      });
+    } catch (error, stackTrace) {
+      if (!_isCleaningUp && !_hasEndedCall) {
+        _reportNonFatalError('attach remote stream', error, stackTrace);
+      }
+    }
+  }
+
+  bool _canAttachRemoteStream(_PeerSession session) {
+    return mounted &&
+        !_hasEndedCall &&
+        !_isCleaningUp &&
+        !session.isClosing &&
+        identical(_peerSessions[session.peerId], session);
+  }
+
+  Future<RTCVideoRenderer?> _getOrCreateRemoteRenderer(String peerId) {
+    final existingRenderer = _remoteRenderers[peerId];
+    if (existingRenderer != null) {
+      return Future<RTCVideoRenderer?>.value(existingRenderer);
     }
 
-    renderer.srcObject = stream;
+    final pendingInitialization = _remoteRendererInitializations[peerId];
+    if (pendingInitialization != null) {
+      return pendingInitialization;
+    }
 
-    if (kIsWeb) {
-      renderer.muted = !_isSpeakerOn;
-      renderer.volume = _isSpeakerOn ? 1.0 : 0.0;
-    } else {
-      for (final audioTrack in stream.getAudioTracks()) {
-        audioTrack.enabled = true;
+    final renderer = RTCVideoRenderer();
+    late final Future<RTCVideoRenderer?> initialization;
+    initialization = () async {
+      try {
+        await renderer.initialize();
+
+        // initialize() crosses the platform channel. The page or peer can be
+        // torn down while it is in flight, so never publish a stale renderer.
+        if (!mounted ||
+            _hasEndedCall ||
+            _isCleaningUp ||
+            !_peerSessions.containsKey(peerId)) {
+          await _disposeAbandonedRemoteRenderer(renderer, peerId);
+          return null;
+        }
+
+        _remoteRenderers[peerId] = renderer;
+        return renderer;
+      } catch (_) {
         try {
-          await Helper.setVolume(1.0, audioTrack);
+          await renderer.dispose();
         } catch (error, stackTrace) {
           _reportNonFatalError(
-            'set incoming audio track volume',
+            'dispose failed remote renderer',
             error,
             stackTrace,
           );
         }
+        rethrow;
+      } finally {
+        if (identical(_remoteRendererInitializations[peerId], initialization)) {
+          _remoteRendererInitializations.remove(peerId);
+        }
       }
-      if (_isSpeakerOn) {
-        await _maximizeAndroidSpeakerVolume();
-      }
-    }
+    }();
+    _remoteRendererInitializations[peerId] = initialization;
+    return initialization;
+  }
 
-    if (kIsWeb && _mediaRecorder != null) {
-      _webRecordingHelper.addRemoteStream(stream);
+  Future<void> _disposeAbandonedRemoteRenderer(
+    RTCVideoRenderer renderer,
+    String peerId,
+  ) async {
+    try {
+      await renderer.dispose();
+    } catch (error, stackTrace) {
+      _reportNonFatalError(
+        'dispose abandoned remote renderer for $peerId',
+        error,
+        stackTrace,
+      );
     }
-
-    if (!mounted || _isCleaningUp || _hasEndedCall) {
-      return;
-    }
-
-    setState(() {
-      _focusedRemotePeerId ??= peerId;
-      _isRemoteConnected = true;
-      _errorMessage = null;
-      _statusMessage = _connectedStatusMessage();
-    });
   }
 
   Future<void> _maximizeAndroidSpeakerVolume() async {
