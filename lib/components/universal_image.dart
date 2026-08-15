@@ -7,6 +7,7 @@ class UniversalImage extends StatelessWidget {
   final double? width;
   final double? height;
   final BoxFit fit;
+  final ImageLoadingBuilder? loadingBuilder;
   final Widget Function(BuildContext, Object, StackTrace?)? errorBuilder;
 
   const UniversalImage({
@@ -15,6 +16,7 @@ class UniversalImage extends StatelessWidget {
     this.width,
     this.height,
     this.fit = BoxFit.cover,
+    this.loadingBuilder,
     this.errorBuilder,
   });
 
@@ -25,6 +27,7 @@ class UniversalImage extends StatelessWidget {
       width: width,
       height: height,
       fit: fit,
+      loadingBuilder: loadingBuilder,
       errorBuilder: errorBuilder,
     );
   }

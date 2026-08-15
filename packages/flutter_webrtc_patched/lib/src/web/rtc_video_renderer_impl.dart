@@ -54,6 +54,12 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
 
   final _subscriptions = <StreamSubscription>[];
 
+  final _audioSubscriptions = <StreamSubscription>[];
+
+  Timer? _audioRetryTimer;
+
+  bool _audioPlayInProgress = false;
+
   String _objectFit = 'contain';
 
   bool _muted = false;
@@ -125,20 +131,76 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
     }
   }
 
-  Future<void> _tryPlayAudio() async {
+  Future<bool> _tryPlayAudio() async {
     final element = _audioElement;
     if (element == null || element.muted || element.volume <= 0) {
-      return;
+      return false;
+    }
+    if (_audioPlayInProgress) {
+      return !element.paused;
     }
 
+    _audioPlayInProgress = true;
     try {
       // Browsers may reject this until it runs from a user gesture. The app's
       // "Enable class sound" action writes muted/volume again, which retries
       // play inside that gesture.
       await element.play().toDart;
+      return !element.paused;
     } catch (_) {
       // Autoplay rejection is expected on some browsers. Keep the renderer
       // alive so playback can be retried after the user taps the sound action.
+      return false;
+    } finally {
+      _audioPlayInProgress = false;
+    }
+  }
+
+  void _scheduleAudioPlaybackRetry([
+    Duration delay = const Duration(milliseconds: 250),
+  ]) {
+    _audioRetryTimer?.cancel();
+    _audioRetryTimer = Timer(delay, () {
+      unawaited(_tryPlayAudio());
+    });
+  }
+
+  void _installAudioRecoveryListeners(web.HTMLAudioElement element) {
+    for (final subscription in _audioSubscriptions) {
+      unawaited(subscription.cancel());
+    }
+    _audioSubscriptions.clear();
+
+    void retryNow(dynamic _) {
+      unawaited(_tryPlayAudio());
+    }
+
+    void retrySoon(dynamic _) {
+      if (!element.muted && element.srcObject != null) {
+        _scheduleAudioPlaybackRetry();
+      }
+    }
+
+    _audioSubscriptions.add(element.onCanPlay.listen(retryNow));
+    _audioSubscriptions.add(element.onPause.listen(retrySoon));
+    _audioSubscriptions.add(element.onStalled.listen(retrySoon));
+    _audioSubscriptions.add(element.onWaiting.listen(retrySoon));
+    _audioSubscriptions.add(
+      web.document.onVisibilityChange.listen((_) {
+        if (web.document.visibilityState == 'visible') {
+          retryNow(null);
+        }
+      }),
+    );
+
+    // A genuine user gesture is required after an autoplay rejection. Listen
+    // at the document body as well as in Flutter so taps on platform views,
+    // touches, and keyboard interaction all recover remote audio playback.
+    final body = web.document.body;
+    if (body != null) {
+      _audioSubscriptions.add(body.onMouseDown.listen(retryNow));
+      _audioSubscriptions.add(body.onTouchStart.listen(retryNow));
+      _audioSubscriptions.add(body.onKeyDown.listen(retryNow));
     }
   }
 
@@ -197,10 +259,11 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
       if (null == _audioElement) {
         _audioElement = web.HTMLAudioElement()
           ..id = _elementIdForAudio
-          ..muted = stream.ownerTag == 'local'
+          ..muted = stream.ownerTag == 'local' || _muted
           ..volume = _volume
           ..autoplay = true;
         _ensureAudioManagerDiv().append(_audioElement!);
+        _installAudioRecoveryListeners(_audioElement!);
       }
       _audioElement?.srcObject = _audioStream;
       unawaited(_tryPlayAudio());
@@ -250,10 +313,11 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
       if (null == _audioElement) {
         _audioElement = web.HTMLAudioElement()
           ..id = _elementIdForAudio
-          ..muted = stream.ownerTag == 'local'
+          ..muted = stream.ownerTag == 'local' || _muted
           ..volume = _volume
           ..autoplay = true;
         _ensureAudioManagerDiv().append(_audioElement!);
+        _installAudioRecoveryListeners(_audioElement!);
       }
       _audioElement?.srcObject = _audioStream;
       unawaited(_tryPlayAudio());
@@ -289,9 +353,16 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
   @override
   Future<void> dispose() async {
     _srcObject = null;
-    for (var s in _subscriptions) {
-      s.cancel();
+    _audioRetryTimer?.cancel();
+    _audioRetryTimer = null;
+    for (var subscription in _audioSubscriptions) {
+      await subscription.cancel();
     }
+    _audioSubscriptions.clear();
+    for (var s in _subscriptions) {
+      await s.cancel();
+    }
+    _subscriptions.clear();
     final element = findHtmlView();
     element?.removeAttribute('src');
     element?.load();

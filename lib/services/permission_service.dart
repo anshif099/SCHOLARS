@@ -17,6 +17,14 @@ class CameraMicAccessResult {
 }
 
 class PermissionService {
+  static Map<String, dynamic> get _preferredWebAudioConstraints =>
+      <String, dynamic>{
+        'echoCancellation': true,
+        'noiseSuppression': true,
+        'autoGainControl': true,
+        'channelCount': 1,
+      };
+
   static Future<bool> requestCameraAndMic() async {
     if (kIsWeb) return true;
     Map<Permission, PermissionStatus> statuses = await [
@@ -80,7 +88,7 @@ class PermissionService {
     // Attempt 1: Ideal resolution and frame rate
     try {
       return await navigator.mediaDevices.getUserMedia(<String, dynamic>{
-        'audio': true,
+        'audio': _preferredWebAudioConstraints,
         'video': <String, dynamic>{
           'width': <String, dynamic>{'ideal': 640},
           'height': <String, dynamic>{'ideal': 360},
@@ -93,7 +101,7 @@ class PermissionService {
     // Attempt 2: Simplified facingMode constraint (iOS Safari compatible)
     try {
       return await navigator.mediaDevices.getUserMedia(<String, dynamic>{
-        'audio': true,
+        'audio': _preferredWebAudioConstraints,
         'video': <String, dynamic>{'facingMode': 'user'},
       });
     } catch (_) {}

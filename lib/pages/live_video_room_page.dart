@@ -49,7 +49,8 @@ class LiveVideoRoomPage extends StatefulWidget {
   State<LiveVideoRoomPage> createState() => _LiveVideoRoomPageState();
 }
 
-class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
+class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
+    with WidgetsBindingObserver {
   static const MethodChannel _audioOutputChannel = MethodChannel(
     'com.academy.scholars/audio_output',
   );
@@ -69,6 +70,14 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   static const Duration _studentReconnectDelay = Duration(seconds: 2);
   static const Duration _studentConnectTimeout = Duration(seconds: 12);
   static const int _maxStudentReconnectAttempts = 3;
+  static const int _maxSharedPdfBytes = 100 * 1024 * 1024;
+  static const Map<String, dynamic> _preferredWebAudioConstraints =
+      <String, dynamic>{
+        'echoCancellation': true,
+        'noiseSuppression': true,
+        'autoGainControl': true,
+        'channelCount': 1,
+      };
 
   final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
   final Map<String, RTCVideoRenderer> _remoteRenderers =
@@ -157,6 +166,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   Future<void> _pdfPageSyncTask = Future<void>.value();
   bool _isDrawingMode = false;
   bool _isSharedDocumentPickerOpen = false;
+  bool _isExitConfirmationOpen = false;
   DateTime? _ignoreBackNavigationUntil;
   Color _selectedDrawColor = Colors.red;
   double _selectedDrawWidth = 4.0;
@@ -239,6 +249,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _localParticipantId = _buildLocalParticipantId();
     _localParticipantName = _buildLocalParticipantName();
     _connectionId = _buildConnectionId();
@@ -511,7 +522,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         try {
           _localStream = await navigator.mediaDevices.getUserMedia(
             <String, dynamic>{
-              'audio': true,
+              'audio': _preferredWebAudioConstraints,
               'video': <String, dynamic>{
                 'width': <String, dynamic>{'ideal': _callVideoWidth},
                 'height': <String, dynamic>{'ideal': _callVideoHeight},
@@ -524,7 +535,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
           try {
             _localStream = await navigator.mediaDevices.getUserMedia(
               <String, dynamic>{
-                'audio': true,
+                'audio': _preferredWebAudioConstraints,
                 'video': <String, dynamic>{'facingMode': 'user'},
               },
             );
@@ -1299,12 +1310,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
         return;
       }
 
-      renderer.srcObject = stream;
-
       if (kIsWeb) {
         renderer.muted = !_isSpeakerOn;
         renderer.volume = _isSpeakerOn ? 1.0 : 0.0;
+        renderer.srcObject = stream;
       } else {
+        renderer.srcObject = stream;
         for (final audioTrack in stream.getAudioTracks()) {
           audioTrack.enabled = true;
           try {
@@ -1435,12 +1446,16 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     }
   }
 
-  void _enableWebAudio({bool showMessage = true}) {
+  void _enableWebAudio({bool showMessage = true, bool markUnlocked = true}) {
     if (!kIsWeb) {
       return;
     }
 
+    var hasRemoteAudio = false;
     for (final renderer in _remoteRenderers.values) {
+      if (renderer.srcObject?.getAudioTracks().isNotEmpty ?? false) {
+        hasRemoteAudio = true;
+      }
       // These setters also retry HTMLAudioElement.play(). Calling them from
       // this tap satisfies browser autoplay policies that blocked sound.
       renderer.muted = false;
@@ -1450,11 +1465,52 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     if (mounted) {
       setState(() {
         _isSpeakerOn = true;
-        _webAudioUnlocked = true;
+        // Do not hide the unlock prompt before a remote audio element exists.
+        // A later stream would otherwise be blocked with no recovery action.
+        _webAudioUnlocked = markUnlocked && hasRemoteAudio;
       });
-      if (showMessage) {
+      if (showMessage && hasRemoteAudio) {
         _showSnackBar('Class sound enabled at full volume');
       }
+    }
+  }
+
+  Future<void> _restoreIncomingAudioPlayback() async {
+    if (!mounted || _hasEndedCall || _isCleaningUp || !_isSpeakerOn) {
+      return;
+    }
+
+    if (kIsWeb) {
+      // A lifecycle callback is not a trusted user gesture, so keep the
+      // visible recovery action available if the browser still blocks play().
+      _enableWebAudio(showMessage: false, markUnlocked: false);
+      return;
+    }
+
+    for (final renderer in _remoteRenderers.values) {
+      final stream = renderer.srcObject;
+      for (final audioTrack
+          in stream?.getAudioTracks() ?? <MediaStreamTrack>[]) {
+        audioTrack.enabled = true;
+        try {
+          await Helper.setVolume(1.0, audioTrack);
+        } catch (error, stackTrace) {
+          _reportNonFatalError(
+            'restore incoming audio track volume',
+            error,
+            stackTrace,
+          );
+        }
+      }
+    }
+
+    await _maximizeAndroidSpeakerVolume();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_restoreIncomingAudioPlayback());
     }
   }
 
@@ -2699,18 +2755,26 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   Future<void> _toggleSpeaker() async {
     final nextVal = !_isSpeakerOn;
     if (kIsWeb) {
-      setState(() {
-        _isSpeakerOn = nextVal;
-        _webAudioUnlocked = nextVal;
-      });
-      for (final renderer in _remoteRenderers.values) {
-        renderer.muted = !nextVal;
-        renderer.volume = nextVal ? 1.0 : 0.0;
+      if (nextVal) {
+        _enableWebAudio();
+      } else {
+        for (final renderer in _remoteRenderers.values) {
+          renderer.muted = true;
+          renderer.volume = 0.0;
+        }
+        setState(() {
+          _isSpeakerOn = false;
+          _webAudioUnlocked = false;
+        });
+        _showSnackBar('Class sound muted');
       }
-      _showSnackBar(nextVal ? 'Class sound enabled' : 'Class sound muted');
     } else {
       try {
-        await Helper.setSpeakerphoneOn(nextVal);
+        if (nextVal) {
+          await _maximizeAndroidSpeakerVolume();
+        } else {
+          await Helper.setSpeakerphoneOn(false);
+        }
         setState(() {
           _isSpeakerOn = nextVal;
         });
@@ -2733,6 +2797,54 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Future<void> _requestCallExit() async {
+    if (!mounted ||
+        _hasEndedCall ||
+        _isCleaningUp ||
+        _isSharedDocumentPickerOpen ||
+        _isExitConfirmationOpen) {
+      return;
+    }
+
+    final ignoreBackUntil = _ignoreBackNavigationUntil;
+    if (ignoreBackUntil != null && DateTime.now().isBefore(ignoreBackUntil)) {
+      return;
+    }
+
+    _isExitConfirmationOpen = true;
+    try {
+      final shouldExit = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(widget.isTeacher ? 'End live class?' : 'Leave class?'),
+          content: Text(
+            widget.isTeacher
+                ? 'This will end the live class for every student.'
+                : 'You will leave the live class. The teacher and other students will remain connected.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Stay'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+              child: Text(widget.isTeacher ? 'End Class' : 'Leave'),
+            ),
+          ],
+        ),
+      );
+
+      if (shouldExit == true && mounted) {
+        await _endCall();
+      }
+    } finally {
+      _isExitConfirmationOpen = false;
+    }
+  }
+
   int? _parseInt(dynamic value) {
     if (value is int) {
       return value;
@@ -2742,6 +2854,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _recordingTimer?.cancel();
     _recordingTimer = null;
     _studentReconnectTimer?.cancel();
@@ -2763,19 +2876,16 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
   @override
   Widget build(BuildContext context) {
     final hideLiveChrome = _isStudentDocumentFullScreen;
+    final controlSurfaceColor = _sharedDocUrl != null
+        ? Colors.black.withValues(alpha: 0.78)
+        : Colors.white.withValues(alpha: 0.2);
     return PopScope<void>(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) {
           return;
         }
-        final ignoreBackUntil = _ignoreBackNavigationUntil;
-        if (_isSharedDocumentPickerOpen ||
-            (ignoreBackUntil != null &&
-                DateTime.now().isBefore(ignoreBackUntil))) {
-          return;
-        }
-        unawaited(_endCall());
+        unawaited(_requestCallExit());
       },
       child: Scaffold(
         backgroundColor: Colors.black,
@@ -2784,6 +2894,14 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
             children: [
               Positioned.fill(
                 child: GestureDetector(
+                  onTapDown: (_) {
+                    if (kIsWeb &&
+                        _isRemoteConnected &&
+                        _isSpeakerOn &&
+                        !_webAudioUnlocked) {
+                      _enableWebAudio(showMessage: false);
+                    }
+                  },
                   onTap: widget.isTeacher
                       ? () => setState(
                           () => _showOwnCameraSmall = !_showOwnCameraSmall,
@@ -3023,7 +3141,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                           icon: Icons.fiber_manual_record_rounded,
                           color: _isRecording
                               ? Colors.redAccent
-                              : Colors.white.withValues(alpha: 0.2),
+                              : controlSurfaceColor,
                           iconColor: _isRecording
                               ? Colors.white
                               : Colors.redAccent,
@@ -3043,7 +3161,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                             ? Icons.volume_up_rounded
                             : Icons.volume_down_rounded,
                         color: _isSpeakerOn
-                            ? Colors.white.withValues(alpha: 0.2)
+                            ? controlSurfaceColor
                             : Colors.redAccent,
                         iconColor: Colors.white,
                         onTap: _toggleSpeaker,
@@ -3055,7 +3173,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                             : Icons.mic_rounded,
                         color: _isMicMuted
                             ? Colors.redAccent
-                            : Colors.white.withValues(alpha: 0.2),
+                            : controlSurfaceColor,
                         iconColor: Colors.white,
                         onTap: _toggleMic,
                       ),
@@ -3065,7 +3183,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                         color: Colors.redAccent,
                         iconColor: Colors.white,
                         size: 64,
-                        onTap: _endCall,
+                        onTap: _requestCallExit,
                       ),
                       _buildControlButton(
                         tooltip: _isVideoOff
@@ -3076,7 +3194,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                             : Icons.videocam_rounded,
                         color: _isVideoOff
                             ? Colors.redAccent
-                            : Colors.white.withValues(alpha: 0.2),
+                            : controlSurfaceColor,
                         iconColor: Colors.white,
                         onTap: _toggleVideo,
                       ),
@@ -3095,7 +3213,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                         _buildControlButton(
                           tooltip: 'Share Document',
                           icon: Icons.present_to_all_rounded,
-                          color: Colors.white.withValues(alpha: 0.2),
+                          color: controlSurfaceColor,
                           iconColor: Colors.white,
                           enabled: !_isProcessing,
                           onTap: () async {
@@ -3224,11 +3342,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
             _documentZoom = 1.0;
             _isDocumentFullScreen = !widget.isTeacher && newUrl != null;
             _pdfReloadNonce = 0;
-            _sharedPdfDocumentRef = newUrl != null && newType == 'pdf'
-                ? _createSharedPdfDocumentRef(newUrl)
-                : null;
+            _sharedPdfDocumentRef = null;
             _showWhiteboardToolbar = true;
           });
+          if (newUrl != null && newType == 'pdf') {
+            unawaited(_prepareSharedPdfDocument(newUrl));
+          }
         } else {
           final pageChanged = newPage != _sharedDocPage;
           if (pageChanged) {
@@ -3347,8 +3466,61 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
       Uri.parse(url),
       key: PdfDocumentRefKey('$url#live-pdf-$_pdfReloadNonce'),
       timeout: const Duration(minutes: 2),
-      useProgressiveLoading: true,
+      // Full-file loading is more reliable than HTTP range/progressive reads
+      // for tokenized Firebase URLs on iPhone Safari.
+      useProgressiveLoading: false,
     );
+  }
+
+  PdfDocumentRef _createSharedPdfDataRef(Uint8List bytes, String url) {
+    return PdfDocumentRefData(
+      bytes,
+      sourceName: _sharedDocName ?? url,
+      key: PdfDocumentRefKey('$url#live-pdf-data-$_pdfReloadNonce'),
+      useProgressiveLoading: false,
+    );
+  }
+
+  Future<void> _prepareSharedPdfDocument(String url) async {
+    final reloadNonce = _pdfReloadNonce;
+    Uint8List? bytes;
+
+    // The teacher already selected the PDF. Reusing those bytes avoids a
+    // second cross-origin download, which intermittently fails on iOS Safari.
+    final localFile = _localSharedFile;
+    if (widget.isTeacher &&
+        localFile != null &&
+        localFile.name == _sharedDocName) {
+      bytes = localFile.bytes;
+      final localPath = localFile.path;
+      if (bytes == null && !kIsWeb && localPath != null) {
+        try {
+          bytes = await File(localPath).readAsBytes();
+        } catch (error, stackTrace) {
+          _reportNonFatalError('read selected PDF bytes', error, stackTrace);
+        }
+      }
+    }
+
+    if (bytes == null) {
+      try {
+        bytes = await FirebaseStorage.instance
+            .refFromURL(url)
+            .getData(_maxSharedPdfBytes);
+      } catch (error, stackTrace) {
+        _reportNonFatalError('download shared PDF bytes', error, stackTrace);
+      }
+    }
+
+    if (!mounted || _sharedDocUrl != url || _pdfReloadNonce != reloadNonce) {
+      return;
+    }
+
+    setState(() {
+      _sharedPdfDocumentRef = bytes != null
+          ? _createSharedPdfDataRef(bytes, url)
+          : _createSharedPdfDocumentRef(url);
+    });
   }
 
   void _retrySharedPdf() {
@@ -3359,8 +3531,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
 
     setState(() {
       _pdfReloadNonce++;
-      _sharedPdfDocumentRef = _createSharedPdfDocumentRef(url);
+      _sharedPdfDocumentRef = null;
     });
+    unawaited(_prepareSharedPdfDocument(url));
   }
 
   void _resetDocumentZoom() {
@@ -3643,52 +3816,42 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
                         ),
                       ),
                       Positioned.fill(
-                        child: widget.isTeacher
+                        child: widget.isTeacher && _isDrawingMode
                             ? GestureDetector(
                                 behavior: HitTestBehavior.opaque,
-                                onPanStart: _isDrawingMode
-                                    ? (details) {
-                                        final box =
-                                            _canvasKey.currentContext
-                                                    ?.findRenderObject()
-                                                as RenderBox?;
-                                        if (box == null) return;
-                                        final localPos = box.globalToLocal(
-                                          details.globalPosition,
-                                        );
-                                        final normX =
-                                            (localPos.dx / box.size.width)
-                                                .clamp(0.0, 1.0);
-                                        final normY =
-                                            (localPos.dy / box.size.height)
-                                                .clamp(0.0, 1.0);
-                                        _onDrawingStart(Offset(normX, normY));
-                                      }
-                                    : null,
-                                onPanUpdate: _isDrawingMode
-                                    ? (details) {
-                                        final box =
-                                            _canvasKey.currentContext
-                                                    ?.findRenderObject()
-                                                as RenderBox?;
-                                        if (box == null) return;
-                                        final localPos = box.globalToLocal(
-                                          details.globalPosition,
-                                        );
-                                        final normX =
-                                            (localPos.dx / box.size.width)
-                                                .clamp(0.0, 1.0);
-                                        final normY =
-                                            (localPos.dy / box.size.height)
-                                                .clamp(0.0, 1.0);
-                                        _onDrawingUpdate(Offset(normX, normY));
-                                      }
-                                    : null,
-                                onPanEnd: _isDrawingMode
-                                    ? (details) {
-                                        _onDrawingEnd();
-                                      }
-                                    : null,
+                                onPanStart: (details) {
+                                  final box =
+                                      _canvasKey.currentContext
+                                              ?.findRenderObject()
+                                          as RenderBox?;
+                                  if (box == null) return;
+                                  final localPos = box.globalToLocal(
+                                    details.globalPosition,
+                                  );
+                                  final normX = (localPos.dx / box.size.width)
+                                      .clamp(0.0, 1.0);
+                                  final normY = (localPos.dy / box.size.height)
+                                      .clamp(0.0, 1.0);
+                                  _onDrawingStart(Offset(normX, normY));
+                                },
+                                onPanUpdate: (details) {
+                                  final box =
+                                      _canvasKey.currentContext
+                                              ?.findRenderObject()
+                                          as RenderBox?;
+                                  if (box == null) return;
+                                  final localPos = box.globalToLocal(
+                                    details.globalPosition,
+                                  );
+                                  final normX = (localPos.dx / box.size.width)
+                                      .clamp(0.0, 1.0);
+                                  final normY = (localPos.dy / box.size.height)
+                                      .clamp(0.0, 1.0);
+                                  _onDrawingUpdate(Offset(normX, normY));
+                                },
+                                onPanEnd: (details) {
+                                  _onDrawingEnd();
+                                },
                                 child: CustomPaint(
                                   painter: DrawingPainter(
                                     completedStrokes: _completedStrokes,
@@ -3738,10 +3901,51 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage> {
     }
 
     image ??= UniversalImage(
+      key: ValueKey<String>('shared-image-${_sharedDocUrl!}'),
       imageUrl: _sharedDocUrl!,
       fit: BoxFit.contain,
-      errorBuilder: (context, error, stackTrace) => const Center(
-        child: Icon(Icons.broken_image, color: Colors.grey, size: 48),
+      loadingBuilder: (context, child, loadingProgress) {
+        if (loadingProgress == null) {
+          return child;
+        }
+        return const Center(
+          child: CircularProgressIndicator(color: AppColors.primaryNavy),
+        );
+      },
+      errorBuilder: (context, error, stackTrace) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.broken_image_rounded,
+                color: Colors.grey,
+                size: 48,
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Shared image could not be displayed',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.black87,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: () => unawaited(
+                  launchUrl(
+                    Uri.parse(_sharedDocUrl!),
+                    mode: LaunchMode.externalApplication,
+                  ),
+                ),
+                icon: const Icon(Icons.open_in_new_rounded),
+                label: const Text('Open externally'),
+              ),
+            ],
+          ),
+        ),
       ),
     );
     return _buildZoomableSharedDocument(image);

@@ -5,6 +5,7 @@ Widget buildPlatformImage({
   double? width,
   double? height,
   required BoxFit fit,
+  ImageLoadingBuilder? loadingBuilder,
   Widget Function(BuildContext, Object, StackTrace?)? errorBuilder,
 }) {
   return Image.network(
@@ -12,6 +13,7 @@ Widget buildPlatformImage({
     width: width,
     height: height,
     fit: fit,
+    loadingBuilder: loadingBuilder,
     errorBuilder: errorBuilder,
   );
 }
