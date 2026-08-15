@@ -19,6 +19,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../services/web_recording_helper.dart';
 
 import '../services/firebase_upload_auth_service.dart';
+import '../services/live_class_lifecycle_policy.dart';
 import '../services/permission_service.dart';
 import '../theme/app_theme.dart';
 import '../components/universal_image.dart';
@@ -69,6 +70,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   static const Duration _uploadRetryLimit = Duration(minutes: 30);
   static const Duration _studentReconnectDelay = Duration(seconds: 2);
   static const Duration _studentConnectTimeout = Duration(seconds: 12);
+  static const Duration _participantHeartbeatInterval = Duration(seconds: 30);
+  static const Duration _classEndConfirmationDelay = Duration(seconds: 5);
   static const int _maxStudentReconnectAttempts = 3;
   static const int _maxSharedPdfBytes = 100 * 1024 * 1024;
   static const Map<String, dynamic> _preferredWebAudioConstraints =
@@ -100,6 +103,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
   StreamSubscription<DatabaseEvent>? _participantsSub;
   StreamSubscription<DatabaseEvent>? _classStatusSub;
+  StreamSubscription<DatabaseEvent>? _firebaseConnectionSub;
 
   bool _isInitializing = true;
   bool _isMicMuted = false;
@@ -127,9 +131,15 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   bool _webAudioUnlocked = !kIsWeb;
   Timer? _recordingTimer;
   Timer? _studentReconnectTimer;
+  Timer? _participantHeartbeatTimer;
+  Timer? _classEndConfirmationTimer;
   int _studentReconnectAttempts = 0;
   bool _studentReconnectInProgress = false;
   bool _showStudentReconnectAction = false;
+  bool _firebaseConnectionInitialized = false;
+  bool _firebaseWasDisconnected = false;
+  bool _connectivityRecoveryInProgress = false;
+  bool _presenceRefreshInProgress = false;
   RTCPeerConnection? _loopbackConnectionA;
   RTCPeerConnection? _loopbackConnectionB;
   dynamic _webRecordedBlob;
@@ -381,6 +391,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       }
       _listenToParticipants();
       await _registerParticipant();
+      _startParticipantHeartbeat();
+      _listenForFirebaseConnectionChanges();
       _listenForSignaling();
       if (!widget.isTeacher) {
         _listenForClassStatus();
@@ -434,11 +446,157 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         'role': _localRole,
         'connection_id': _connectionId,
         'joined_at': ServerValue.timestamp,
+        'last_seen': ServerValue.timestamp,
         'mic_enabled': !_isMicMuted,
         'video_enabled': !_isVideoOff,
       });
     } catch (error, stackTrace) {
       _reportNonFatalError('register participant', error, stackTrace);
+    }
+  }
+
+  void _startParticipantHeartbeat() {
+    _participantHeartbeatTimer?.cancel();
+    _participantHeartbeatTimer = Timer.periodic(
+      _participantHeartbeatInterval,
+      (_) => unawaited(_refreshParticipantPresence()),
+    );
+  }
+
+  Future<bool> _isFirebaseConnected() async {
+    try {
+      final snapshot = await FirebaseDatabase.instance
+          .ref('.info/connected')
+          .get();
+      return snapshot.value == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> _isTeacherClassLive() async {
+    try {
+      final snapshot = await _liveClassRef.child('is_live').get();
+      return snapshot.value == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _refreshParticipantPresence() async {
+    if (_hasEndedCall ||
+        _isCleaningUp ||
+        !_hasClaimedSession ||
+        _presenceRefreshInProgress) {
+      return;
+    }
+
+    _presenceRefreshInProgress = true;
+    try {
+      if (!await _isFirebaseConnected()) {
+        return;
+      }
+      if (!widget.isTeacher && !await _isTeacherClassLive()) {
+        _scheduleClassEndConfirmation();
+        return;
+      }
+
+      final participantRef = _participantsRef.child(_localParticipantId);
+      // Firebase onDisconnect operations fire once. Re-arm it whenever the
+      // connection is healthy so a later Android network switch is handled.
+      await participantRef.onDisconnect().remove();
+      await participantRef.runTransaction((currentValue) {
+        if (currentValue is Map) {
+          final currentConnectionId = currentValue['connection_id']?.toString();
+          if (currentConnectionId != null &&
+              currentConnectionId.isNotEmpty &&
+              currentConnectionId != _connectionId) {
+            return Transaction.abort();
+          }
+        }
+
+        final presence = currentValue is Map
+            ? Map<String, dynamic>.from(currentValue)
+            : <String, dynamic>{};
+        presence.addAll(<String, dynamic>{
+          'id': _localParticipantId,
+          'name': _localParticipantName,
+          'role': _localRole,
+          'connection_id': _connectionId,
+          'last_seen': ServerValue.timestamp,
+          'mic_enabled': !_isMicMuted,
+          'video_enabled': !_isVideoOff,
+        });
+        presence['joined_at'] ??= ServerValue.timestamp;
+        return Transaction.success(presence);
+      });
+    } catch (error) {
+      // A heartbeat is best-effort. The Firebase connection listener and the
+      // next heartbeat will retry without closing the live room.
+      debugPrint('Participant presence refresh failed: $error');
+    } finally {
+      _presenceRefreshInProgress = false;
+    }
+  }
+
+  void _listenForFirebaseConnectionChanges() {
+    _firebaseConnectionSub?.cancel();
+    _firebaseConnectionSub = FirebaseDatabase.instance
+        .ref('.info/connected')
+        .onValue
+        .listen(
+          (event) {
+            final connected = event.snapshot.value == true;
+            if (!_firebaseConnectionInitialized) {
+              _firebaseConnectionInitialized = true;
+              _firebaseWasDisconnected = !connected;
+              return;
+            }
+
+            if (!connected) {
+              _firebaseWasDisconnected = true;
+              if (mounted && !widget.isTeacher && !_hasEndedCall) {
+                _updateStatus('Connection interrupted. Reconnecting...');
+              }
+              return;
+            }
+
+            if (_firebaseWasDisconnected) {
+              _firebaseWasDisconnected = false;
+              unawaited(_recoverAfterConnectivityReturns());
+            }
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            _reportNonFatalError(
+              'Firebase connectivity listener',
+              error,
+              stackTrace,
+            );
+          },
+        );
+  }
+
+  Future<void> _recoverAfterConnectivityReturns() async {
+    if (_connectivityRecoveryInProgress ||
+        _isInitializing ||
+        _hasEndedCall ||
+        _isCleaningUp) {
+      return;
+    }
+
+    _connectivityRecoveryInProgress = true;
+    try {
+      if (!widget.isTeacher && !await _isTeacherClassLive()) {
+        _scheduleClassEndConfirmation();
+        return;
+      }
+
+      await _refreshParticipantPresence();
+      if (!widget.isTeacher && !_isStudentTeacherConnected) {
+        await _restartStudentConnection(manual: true);
+      }
+    } finally {
+      _connectivityRecoveryInProgress = false;
     }
   }
 
@@ -1029,25 +1187,67 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   void _listenForClassStatus() {
-    _classStatusSub = _liveClassRef.onValue.listen((event) {
-      if (!mounted || widget.isTeacher) return;
+    _classStatusSub = _liveClassRef.onValue.listen(
+      (event) {
+        if (!mounted || widget.isTeacher) return;
 
-      final data = event.snapshot.value;
-      if (data == null) {
-        // Teacher ended the call and removed the node
-        debugPrint('Teacher ended the call (node removed)');
-        unawaited(_endCall());
-        return;
-      }
-
-      if (data is Map) {
-        final isLive = data['is_live'] ?? false;
-        if (!isLive) {
-          debugPrint('Teacher ended the call (is_live: false)');
-          unawaited(_endCall());
+        final data = event.snapshot.value;
+        if (LiveClassLifecyclePolicy.isActiveSnapshot(data)) {
+          _classEndConfirmationTimer?.cancel();
+          _classEndConfirmationTimer = null;
+          return;
         }
+
+        // A brief Android network handoff can temporarily expose a stale,
+        // empty, or incomplete cached snapshot. Confirm every non-live value
+        // against the connected server before treating it as a teacher end.
+        _scheduleClassEndConfirmation();
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        _reportNonFatalError('class status listener', error, stackTrace);
+      },
+    );
+  }
+
+  void _scheduleClassEndConfirmation() {
+    if (widget.isTeacher || _hasEndedCall || _isCleaningUp) {
+      return;
+    }
+
+    _classEndConfirmationTimer?.cancel();
+    _classEndConfirmationTimer = Timer(
+      _classEndConfirmationDelay,
+      () => unawaited(_confirmTeacherEndedClass()),
+    );
+  }
+
+  Future<void> _confirmTeacherEndedClass() async {
+    if (!mounted || widget.isTeacher || _hasEndedCall || _isCleaningUp) {
+      return;
+    }
+
+    // Never close a student's room merely because their phone is offline.
+    if (!await _isFirebaseConnected()) {
+      if (mounted) {
+        _updateStatus('Connection interrupted. Reconnecting...');
       }
-    });
+      return;
+    }
+
+    try {
+      final snapshot = await _liveClassRef.get();
+      final data = snapshot.value;
+      final shouldClose = LiveClassLifecyclePolicy.shouldCloseStudentRoom(
+        firebaseConnected: true,
+        classSnapshot: data,
+      );
+      if (shouldClose && mounted && !_hasEndedCall && !_isCleaningUp) {
+        debugPrint('Teacher end confirmed from Firebase.');
+        await _endCall();
+      }
+    } catch (error, stackTrace) {
+      _reportNonFatalError('confirm teacher ended class', error, stackTrace);
+    }
   }
 
   Future<void> _handleRemoteCandidateAdded(
@@ -1510,8 +1710,14 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      unawaited(_restoreIncomingAudioPlayback());
+      unawaited(_recoverAfterAppResume());
     }
+  }
+
+  Future<void> _recoverAfterAppResume() async {
+    await _enableScreenAwake();
+    await _restoreIncomingAudioPlayback();
+    await _recoverAfterConnectivityReturns();
   }
 
   Future<void> _startLoopbackConnection() async {
@@ -2570,11 +2776,17 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       _stopLoopbackConnection();
       _studentReconnectTimer?.cancel();
       _studentReconnectTimer = null;
+      _participantHeartbeatTimer?.cancel();
+      _participantHeartbeatTimer = null;
+      _classEndConfirmationTimer?.cancel();
+      _classEndConfirmationTimer = null;
       // 1. Cancel all Firebase listeners first
       await _participantsSub?.cancel();
       _participantsSub = null;
       await _classStatusSub?.cancel();
       _classStatusSub = null;
+      await _firebaseConnectionSub?.cancel();
+      _firebaseConnectionSub = null;
 
       // 2. Remove room state from database
       if (shouldMutateRoom) {
@@ -2859,7 +3071,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     _recordingTimer = null;
     _studentReconnectTimer?.cancel();
     _studentReconnectTimer = null;
+    _participantHeartbeatTimer?.cancel();
+    _participantHeartbeatTimer = null;
+    _classEndConfirmationTimer?.cancel();
+    _classEndConfirmationTimer = null;
     unawaited(_disableScreenAwake());
+    _firebaseConnectionSub?.cancel();
     _drawingStrokesSub?.cancel();
     _currentStrokeSub?.cancel();
     _sharedDocumentSub?.cancel();
