@@ -1,7 +1,5 @@
 const admin = require("firebase-admin");
 const functions = require("firebase-functions/v1");
-const {onValueWritten} = require("firebase-functions/v2/database");
-const {onObjectFinalized} = require("firebase-functions/v2/storage");
 const {logger} = require("firebase-functions");
 const {randomUUID} = require("node:crypto");
 const {spawn} = require("node:child_process");
@@ -200,35 +198,32 @@ async function transcodeRecordedWebm(object, initialRecordedClassRef = null) {
 }
 
 const transcodeOptions = {
-  memory: "2GiB",
-  cpu: 2,
+  memory: "2GB",
   timeoutSeconds: 540,
   maxInstances: 2,
 };
 
-exports.transcodeRecordedWebmToMp4 = onObjectFinalized(
-  {
-    ...transcodeOptions,
-    bucket: STORAGE_BUCKET,
-    region: "asia-south1",
-  },
-  (event) => transcodeRecordedWebm(event.data)
-);
+exports.transcodeRecordedWebmToMp4 = functions
+  .region("asia-south1")
+  .runWith(transcodeOptions)
+  .storage.bucket(STORAGE_BUCKET)
+  .object()
+  .onFinalize((object) => transcodeRecordedWebm(object));
 
 // Existing WebM files predate the Storage trigger. An iPhone client can mark
 // one as requested; this path converts it without replacing the source file.
-exports.transcodeRequestedRecordedWebmToMp4 = onValueWritten(
-  {
-    ...transcodeOptions,
-    region: "us-central1",
-    ref: "/recorded_classes/{classId}/{recordingId}/compatibility_requested_at",
-  },
-  async (event) => {
-    if (!event.data.after.exists() || event.data.after.val() === event.data.before.val()) {
+exports.transcodeRequestedRecordedWebmToMp4 = functions
+  .region("us-central1")
+  .runWith(transcodeOptions)
+  .database.ref(
+    "/recorded_classes/{classId}/{recordingId}/compatibility_requested_at"
+  )
+  .onWrite(async (change) => {
+    if (!change.after.exists() || change.after.val() === change.before.val()) {
       return;
     }
 
-    const recordedClassRef = event.data.after.ref.parent;
+    const recordedClassRef = change.after.ref.parent;
     const snapshot = await recordedClassRef.once("value");
     const recording = snapshot.val() || {};
     const sourcePath = String(recording.storage_path || "");
@@ -239,8 +234,7 @@ exports.transcodeRequestedRecordedWebmToMp4 = onValueWritten(
     const file = admin.storage().bucket(STORAGE_BUCKET).file(sourcePath);
     const [metadata] = await file.getMetadata();
     await transcodeRecordedWebm(metadata, recordedClassRef);
-  }
-);
+  });
 
 exports.notifyStudentsOnLiveClassStart = functions.database
   .ref("/live_classes/{classId}")
