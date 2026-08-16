@@ -42,6 +42,18 @@ bool _isRecordingUploadPending(Map recording) {
       age <= const Duration(minutes: 45).inMilliseconds;
 }
 
+bool _isRecordingCompatibilityPending(Map recording) {
+  final status = recording['compatibility_status']?.toString();
+  return status == 'waiting' || status == 'converting';
+}
+
+bool _needsIOSRecordingConversion(Map recording) {
+  if (!kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return false;
+  final mime = recording['mime_type']?.toString().toLowerCase() ?? '';
+  final url = recording['video_url']?.toString().toLowerCase() ?? '';
+  return mime.contains('webm') || url.contains('.webm');
+}
+
 class StudentDashboardPage extends StatefulWidget {
   final Map<dynamic, dynamic> studentData;
   final bool showNotificationWarning;
@@ -1273,6 +1285,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   }
 
   bool _hasPlayableRecording(Map<String, dynamic> recording) {
+    if (_isRecordingCompatibilityPending(recording)) return false;
     final hasUrl =
         recording['video_url'] != null &&
         recording['video_url'].toString().isNotEmpty;
@@ -1283,6 +1296,9 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   }
 
   String? _recordingStatusLabel(Map<String, dynamic> recording) {
+    if (_isRecordingCompatibilityPending(recording)) {
+      return 'Preparing for iPhone';
+    }
     if (_hasPlayableRecording(recording)) return null;
 
     if (_isRecordingUploadPending(recording)) {
@@ -1303,6 +1319,9 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   }
 
   String _recordingUnavailableMessage(Map<String, dynamic> recording) {
+    if (_isRecordingCompatibilityPending(recording)) {
+      return 'This recording is being converted for iPhone. Try again shortly.';
+    }
     if (_isRecordingUploadPending(recording)) {
       return 'Video is still uploading. Try again shortly.';
     }
@@ -1646,6 +1665,7 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
   }
 
   bool _hasPlayableRecording(Map<dynamic, dynamic> recording) {
+    if (_isRecordingCompatibilityPending(recording)) return false;
     final hasUrl =
         recording['video_url'] != null &&
         recording['video_url'].toString().isNotEmpty;
@@ -1656,6 +1676,9 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
   }
 
   String? _recordingStatusLabel(Map<dynamic, dynamic> recording) {
+    if (_isRecordingCompatibilityPending(recording)) {
+      return 'Preparing for iPhone';
+    }
     if (_hasPlayableRecording(recording)) return null;
 
     if (_isRecordingUploadPending(recording)) {
@@ -1676,6 +1699,9 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
   }
 
   String _recordingUnavailableMessage(Map<dynamic, dynamic> recording) {
+    if (_isRecordingCompatibilityPending(recording)) {
+      return 'This recording is being converted for iPhone. Try again shortly.';
+    }
     if (_isRecordingUploadPending(recording)) {
       return 'Video is still uploading. Try again shortly.';
     }
@@ -2619,6 +2645,33 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                                           ),
                                         ),
                                         onPressed: () async {
+                                          if (_needsIOSRecordingConversion(
+                                            rc,
+                                          )) {
+                                            await FirebaseDatabase.instance
+                                                .ref()
+                                                .child('recorded_classes')
+                                                .child(widget.classId)
+                                                .child(rc['key'].toString())
+                                                .update(<String, dynamic>{
+                                                  'compatibility_status':
+                                                      'waiting',
+                                                  'compatibility_requested_at':
+                                                      ServerValue.timestamp,
+                                                });
+                                            if (context.mounted) {
+                                              ScaffoldMessenger.of(
+                                                context,
+                                              ).showSnackBar(
+                                                const SnackBar(
+                                                  content: Text(
+                                                    'Preparing this recording for iPhone. It will be available shortly.',
+                                                  ),
+                                                ),
+                                              );
+                                            }
+                                            return;
+                                          }
                                           if (hasPlayable) {
                                             // Increment views count
                                             await _incrementViews(rc['key']);

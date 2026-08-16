@@ -1870,8 +1870,17 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       return;
     }
 
-    if (_isVideoOff) {
+    final videoTrack = _localStream!.getVideoTracks().isNotEmpty
+        ? _localStream!.getVideoTracks().first
+        : null;
+    if (_isVideoOff || videoTrack == null || !videoTrack.enabled) {
       _showSnackBar('Turn camera on before recording.');
+      return;
+    }
+    if (videoTrack.muted == true) {
+      _showSnackBar(
+        'The camera is not sending video. Turn it off and on, then try again.',
+      );
       return;
     }
 
@@ -1890,10 +1899,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       }
 
       _mediaRecorder = MediaRecorder(albumName: '');
-
-      final videoTrack = _localStream!.getVideoTracks().isNotEmpty
-          ? _localStream!.getVideoTracks().first
-          : null;
 
       if (kIsWeb) {
         final remoteStreams = _remoteRenderers.values
@@ -2209,6 +2214,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
   Future<void> _toggleVideo() async {
     final nextValue = !_isVideoOff;
+    if (widget.isTeacher && _isRecording && nextValue) {
+      _showSnackBar(
+        'Save the recording before turning the camera off, otherwise the saved class will be black.',
+      );
+      return;
+    }
     _localVideoTrack?.enabled = !nextValue;
 
     if (mounted) {
@@ -2516,6 +2527,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
       final recordedMime = _webRecordingHelper.recordedMimeType;
       final fileExtension = recordedMime.contains('mp4') ? 'mp4' : 'webm';
+      final requiresCompatibilityConversion = fileExtension == 'webm';
 
       fileSizeBytes = _webRecordingHelper.recordedSizeBytes;
       storagePath =
@@ -2537,6 +2549,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         'upload_status': 'uploading',
         'storage_path': storagePath,
         'file_size_bytes': fileSizeBytes,
+        'mime_type': recordedMime,
+        'compatibility_status': requiresCompatibilityConversion
+            ? 'waiting'
+            : 'ready',
         'upload_progress': 0,
         'upload_updated_at': DateTime.now().millisecondsSinceEpoch,
       });

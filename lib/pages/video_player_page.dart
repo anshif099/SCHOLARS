@@ -73,8 +73,9 @@ class VideoPlayerPage extends StatefulWidget {
 }
 
 class _VideoPlayerPageState extends State<VideoPlayerPage> {
-  static const Duration _initializationTimeout = Duration(seconds: 20);
+  static const Duration _initializationTimeout = Duration(seconds: 15);
   static const Duration _bufferingTimeout = Duration(seconds: 30);
+  static const Duration _disposalTimeout = Duration(seconds: 3);
 
   VideoPlayerController? _videoPlayerController;
   ChewieController? _chewieController;
@@ -129,12 +130,19 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     return lower.contains('.webm') || lower.contains('webm');
   }
 
+  bool get _isWebmRecording {
+    final mime = widget.mimeType?.toLowerCase() ?? '';
+    return mime.contains('webm') ||
+        (widget.videoUrl != null && _isWebmUrl(widget.videoUrl!));
+  }
+
+  bool get _isIOSWebmRecording =>
+      kIsWeb && defaultTargetPlatform == TargetPlatform.iOS && _isWebmRecording;
+
   bool _needsWebmPlayer(String url) {
     if (kIsWeb) return false; // Web browser handles WebM natively
     // Check explicit mime_type first; fall back to URL inspection
-    final mime = widget.mimeType?.toLowerCase() ?? '';
-    if (mime.contains('webm')) return true;
-    return _isWebmUrl(url);
+    return _isWebmRecording;
   }
 
   Future<void> _initFromUrl(String url) async {
@@ -176,8 +184,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       setState(() => _isLoading = false);
     } catch (e) {
       await _disposePlayerControllers();
-      // Fallback: If on Web, try fetching the video as a local Blob URL
-      if (kIsWeb) {
+      // A Blob contains the same codec and cannot make WebM decodable on iOS.
+      // It also downloads the entire class before retrying, which is especially
+      // expensive on mobile. Keep the Blob fallback for ordinary MP4/network
+      // failures only.
+      if (kIsWeb && !_isWebmRecording) {
         try {
           final blobUrl = await VideoWebHelper().fetchBlobUrl(url);
           _videoPlayerController = VideoPlayerController.networkUrl(
@@ -209,8 +220,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       if (!mounted) return;
       setState(() {
         _isLoading = false;
-        _errorMessage =
-            'The video server did not respond or this device could not decode the recording.';
+        _errorMessage = _isIOSWebmRecording
+            ? 'This older recording is WebM/VP9, which this iPhone cannot decode reliably. It must be converted to MP4 before it can play here.'
+            : 'The video server did not respond or this device could not decode the recording.';
       });
     }
   }
@@ -263,7 +275,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     chewieController?.dispose();
     if (videoController != null) {
       videoController.removeListener(_handlePlaybackProgress);
-      await videoController.dispose();
+      try {
+        await videoController.dispose().timeout(_disposalTimeout);
+      } on TimeoutException {
+        debugPrint('Recorded video controller disposal timed out.');
+      }
     }
   }
 
@@ -420,7 +436,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
         return;
       }
       _showPlaybackError(
-        'The video stopped buffering. Try again, switch networks, or use the compatibility player.',
+        _isIOSWebmRecording
+            ? 'This WebM/VP9 recording cannot be decoded reliably by this iPhone. Convert it to MP4 to play it here.'
+            : 'The video stopped buffering. Try again, switch networks, or use the compatibility player.',
       );
     });
   }

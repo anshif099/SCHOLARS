@@ -11,7 +11,6 @@ WebRecordingHelper getHelper() => WebRecordingHelperImpl();
 class WebRecordingHelperImpl implements WebRecordingHelper {
   static const int _videoBitsPerSecond = 500 * 1000;
   static const int _audioBitsPerSecond = 64 * 1000;
-  static const int _chunkIntervalMs = 10000;
 
   final List<web.Blob> _chunks = <web.Blob>[];
   web.MediaRecorder? _nativeRecorder;
@@ -30,13 +29,21 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
   int get recordedSizeBytes => _recordedBlob?.size ?? 0;
 
   String _getSupportedMimeType() {
+    // Prefer a standards-based H.264/AAC MP4. Safari/iPhone can always play
+    // this combination, while VP9 WebM recordings can remain on a loading
+    // spinner or decode only their Opus audio on some iOS versions.
+    //
+    // `h264` and `opus` are not valid MP4 codec identifiers. Safari expects
+    // RFC 6381 codec strings (avc1/mp4a), so keep those candidates first.
     final types = [
-      'video/webm;codecs=h264,opus',
-      'video/webm;codecs=h264',
-      'video/mp4;codecs=h264,opus',
-      'video/mp4;codecs=h264',
-      'video/webm;codecs=vp9,opus',
+      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+      'video/mp4;codecs=avc1.42E01E',
+      'video/mp4',
+      // VP8 has wider iOS hardware/software support than VP9. Do not put
+      // H.264 inside WebM; that non-standard pairing caused audio-only files.
       'video/webm;codecs=vp8,opus',
+      'video/webm;codecs=vp8',
+      'video/webm;codecs=vp9,opus',
       'video/webm',
     ];
     for (final type in types) {
@@ -150,6 +157,11 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
       ),
     );
     _nativeRecorder = recorder;
+    // Browsers may normalize the requested value. Persist what the recorder
+    // actually produced so Storage metadata and the file extension are true.
+    if (recorder.mimeType.isNotEmpty) {
+      _actualMimeType = recorder.mimeType;
+    }
 
     void onData(web.Event event) {
       final data = event.getProperty<JSAny?>('data'.toJS);
@@ -178,7 +190,10 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
     recorder.addEventListener('dataavailable', onData.toJS);
     recorder.addEventListener('stop', onStop.toJS);
     recorder.addEventListener('error', onError.toJS);
-    recorder.start(_chunkIntervalMs);
+    // Let MediaRecorder finalize one continuous file. Periodic WebKit chunks
+    // produced recordings with no duration/index and duplicate timestamps,
+    // which Safari could not initialize even though their audio was present.
+    recorder.start();
   }
 
   @override

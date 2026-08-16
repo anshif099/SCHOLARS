@@ -12,8 +12,8 @@ import 'package:webview_flutter/webview_flutter.dart';
 /// On Android, the system WebView is Chromium-based and supports VP8/VP9 WebM
 /// natively, solving the incompatibility with Flutter's [video_player] package.
 ///
-/// On iOS, WKWebView does NOT support VP8/VP9 WebM, so we fall back to showing
-/// an "Open in Browser" prompt (Chrome/Firefox on iOS can play WebM).
+/// On iOS, WebM support depends on the OS, codec, and file indexing. Older
+/// browser recordings should be converted to H.264/AAC MP4 for reliable use.
 class WebmVideoPlayerPage extends StatefulWidget {
   final String videoUrl;
   final String title;
@@ -386,7 +386,8 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
   }
 
   Widget _buildBody() {
-    // iOS: WKWebView doesn't support VP8/VP9 — show open-in-browser prompt
+    // iOS: offer a last-resort browser attempt while clearly explaining that
+    // the reliable fix is server-side MP4 conversion.
     if (_isIOS) {
       return _buildIOSFallback();
     }
@@ -477,7 +478,7 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
           ),
           const SizedBox(height: 24),
           Text(
-            'Open in Browser',
+            'MP4 Conversion Needed',
             style: GoogleFonts.poppins(
               color: Colors.white,
               fontSize: 18,
@@ -486,7 +487,7 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
           ),
           const SizedBox(height: 12),
           Text(
-            'This recording is in WebM format, and playback support varies by iOS version.\n\nTap below to try it in your browser.',
+            'This older recording is in WebM format. iPhone may load only its sound or remain buffering until it is converted to MP4.\n\nYou can still try the system browser below.',
             textAlign: TextAlign.center,
             style: GoogleFonts.poppins(
               color: Colors.white60,
