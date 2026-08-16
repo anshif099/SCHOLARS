@@ -74,6 +74,8 @@ async function transcodeRecordedWebm(object, initialRecordedClassRef = null) {
   const inputPath = path.join(os.tmpdir(), `${workId}.webm`);
   const outputPath = path.join(os.tmpdir(), `${workId}.mp4`);
   const bucket = admin.storage().bucket(bucketName);
+  const sourceContentType = String(object.contentType || "").toLowerCase();
+  const canCopyH264Video = sourceContentType.includes("h264");
   let recordedClassRef =
     initialRecordedClassRef || (await findRecordedClass(classId, sourcePath));
 
@@ -84,6 +86,26 @@ async function transcodeRecordedWebm(object, initialRecordedClassRef = null) {
     });
 
     await bucket.file(sourcePath).download({destination: inputPath});
+    const videoArguments = canCopyH264Video
+      ? ["-c:v", "copy"]
+      : [
+          "-c:v",
+          "libx264",
+          "-preset",
+          "veryfast",
+          "-profile:v",
+          "baseline",
+          "-level",
+          "3.0",
+          "-pix_fmt",
+          "yuv420p",
+          "-crf",
+          "26",
+          "-maxrate",
+          "500k",
+          "-bufsize",
+          "1000k",
+        ];
     await runFfmpeg([
       "-hide_banner",
       "-loglevel",
@@ -97,22 +119,7 @@ async function transcodeRecordedWebm(object, initialRecordedClassRef = null) {
       "0:v:0?",
       "-map",
       "0:a:0?",
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-profile:v",
-      "baseline",
-      "-level",
-      "3.0",
-      "-pix_fmt",
-      "yuv420p",
-      "-crf",
-      "26",
-      "-maxrate",
-      "500k",
-      "-bufsize",
-      "1000k",
+      ...videoArguments,
       "-c:a",
       "aac",
       "-b:a",
@@ -174,6 +181,7 @@ async function transcodeRecordedWebm(object, initialRecordedClassRef = null) {
       sourcePath,
       destinationPath,
       outputBytes: outputStat.size,
+      copiedH264Video: canCopyH264Video,
     });
   } catch (error) {
     logger.error("Recorded class WebM conversion failed.", {
