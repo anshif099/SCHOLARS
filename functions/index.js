@@ -200,7 +200,6 @@ async function transcodeRecordedWebm(object, initialRecordedClassRef = null) {
 }
 
 const transcodeOptions = {
-  region: "us-central1",
   memory: "2GiB",
   cpu: 2,
   timeoutSeconds: 540,
@@ -208,7 +207,11 @@ const transcodeOptions = {
 };
 
 exports.transcodeRecordedWebmToMp4 = onObjectFinalized(
-  {...transcodeOptions, bucket: STORAGE_BUCKET},
+  {
+    ...transcodeOptions,
+    bucket: STORAGE_BUCKET,
+    region: "asia-south1",
+  },
   (event) => transcodeRecordedWebm(event.data)
 );
 
@@ -217,6 +220,7 @@ exports.transcodeRecordedWebmToMp4 = onObjectFinalized(
 exports.transcodeRequestedRecordedWebmToMp4 = onValueWritten(
   {
     ...transcodeOptions,
+    region: "us-central1",
     ref: "/recorded_classes/{classId}/{recordingId}/compatibility_requested_at",
   },
   async (event) => {
