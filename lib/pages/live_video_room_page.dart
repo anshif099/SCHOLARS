@@ -23,6 +23,8 @@ import '../services/live_class_lifecycle_policy.dart';
 import '../services/permission_service.dart';
 import '../theme/app_theme.dart';
 import '../components/universal_image.dart';
+import '../components/web_pdf_page_view.dart';
+import '../services/web_pdf_renderer.dart';
 
 class LiveVideoRoomPage extends StatefulWidget {
   static final Set<String> _activeSessionKeys = <String>{};
@@ -3578,7 +3580,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
             _sharedPdfDocumentRef = null;
             _showWhiteboardToolbar = true;
           });
-          if (newUrl != null && newType == 'pdf') {
+          if (newUrl != null && newType == 'pdf' && !shouldUseWebPdfRenderer) {
             unawaited(_prepareSharedPdfDocument(newUrl));
           }
         } else {
@@ -3762,11 +3764,18 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       return;
     }
 
+    final useWebRenderer = shouldUseWebPdfRenderer;
+    if (useWebRenderer) {
+      disposeWebPdfDocument(url);
+    }
+
     setState(() {
       _pdfReloadNonce++;
       _sharedPdfDocumentRef = null;
     });
-    unawaited(_prepareSharedPdfDocument(url));
+    if (!useWebRenderer) {
+      unawaited(_prepareSharedPdfDocument(url));
+    }
   }
 
   void _resetDocumentZoom() {
@@ -3830,7 +3839,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   void _handleSharedPdfLoaded(PdfDocument document) {
-    final pageCount = document.pages.length;
+    _handleSharedPdfPageCount(document.pages.length);
+  }
+
+  void _handleSharedPdfPageCount(int pageCount) {
     if (pageCount <= 0 || pageCount == _sharedDocPageCount) {
       return;
     }
@@ -4185,6 +4197,25 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   Widget _buildPdfView() {
+    if (shouldUseWebPdfRenderer) {
+      return _buildZoomableSharedDocument(
+        WebPdfPageView(
+          key: ValueKey<String>('web-pdf-${_sharedDocUrl!}'),
+          url: _sharedDocUrl!,
+          pageNumber: _sharedDocPage,
+          reloadNonce: _pdfReloadNonce,
+          onDocumentLoaded: _handleSharedPdfPageCount,
+          onRetry: _retrySharedPdf,
+          onOpenExternally: () => unawaited(
+            launchUrl(
+              Uri.parse(_sharedDocUrl!),
+              mode: LaunchMode.externalApplication,
+            ),
+          ),
+        ),
+      );
+    }
+
     final documentRef = _sharedPdfDocumentRef;
     if (documentRef == null) {
       return const Center(child: CircularProgressIndicator());

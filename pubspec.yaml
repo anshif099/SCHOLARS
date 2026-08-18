@@ -58,6 +58,7 @@ dependencies:
   pdfrx: ^2.4.7
   url_launcher: ^6.3.0
   webview_flutter: ^4.10.0
+  web: ^1.1.1
 
 dependency_overrides:
   flutter_webrtc:
