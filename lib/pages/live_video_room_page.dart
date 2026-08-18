@@ -4198,20 +4198,19 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
   Widget _buildPdfView() {
     if (shouldUseWebPdfRenderer) {
+      final localPdfBytes =
+          widget.isTeacher && _localSharedFile?.name == _sharedDocName
+          ? _localSharedFile?.bytes
+          : null;
       return _buildZoomableSharedDocument(
         WebPdfPageView(
           key: ValueKey<String>('web-pdf-${_sharedDocUrl!}'),
           url: _sharedDocUrl!,
+          data: localPdfBytes,
           pageNumber: _sharedDocPage,
           reloadNonce: _pdfReloadNonce,
           onDocumentLoaded: _handleSharedPdfPageCount,
           onRetry: _retrySharedPdf,
-          onOpenExternally: () => unawaited(
-            launchUrl(
-              Uri.parse(_sharedDocUrl!),
-              mode: LaunchMode.externalApplication,
-            ),
-          ),
         ),
       );
     }

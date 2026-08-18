@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -8,19 +9,19 @@ class WebPdfPageView extends StatefulWidget {
   const WebPdfPageView({
     super.key,
     required this.url,
+    this.data,
     required this.pageNumber,
     required this.reloadNonce,
     required this.onDocumentLoaded,
     required this.onRetry,
-    required this.onOpenExternally,
   });
 
   final String url;
+  final Uint8List? data;
   final int pageNumber;
   final int reloadNonce;
   final ValueChanged<int> onDocumentLoaded;
   final VoidCallback onRetry;
-  final VoidCallback onOpenExternally;
 
   @override
   State<WebPdfPageView> createState() => _WebPdfPageViewState();
@@ -43,6 +44,7 @@ class _WebPdfPageViewState extends State<WebPdfPageView> {
   void didUpdateWidget(covariant WebPdfPageView oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.url != widget.url ||
+        !identical(oldWidget.data, widget.data) ||
         oldWidget.pageNumber != widget.pageNumber ||
         oldWidget.reloadNonce != widget.reloadNonce) {
       if (oldWidget.url != widget.url) {
@@ -65,6 +67,7 @@ class _WebPdfPageViewState extends State<WebPdfPageView> {
         url: widget.url,
         pageNumber: widget.pageNumber,
         maxDimension: _maxRenderedDimension,
+        data: widget.data,
       ).timeout(const Duration(seconds: 45));
       if (!mounted || generation != _loadGeneration) {
         revokeWebPdfPageImage(result.imageUrl);
@@ -134,11 +137,6 @@ class _WebPdfPageViewState extends State<WebPdfPageView> {
                     onPressed: widget.onRetry,
                     icon: const Icon(Icons.refresh_rounded),
                     label: const Text('Retry PDF'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: widget.onOpenExternally,
-                    icon: const Icon(Icons.open_in_new_rounded),
-                    label: const Text('Open externally'),
                   ),
                 ],
               ),

@@ -16,15 +16,18 @@
     },
   );
 
-  async function loadDocument(url) {
+  async function loadDocument(url, data) {
     let entry = documents.get(url);
     if (entry) {
       return entry.promise;
     }
 
     const pdfjsLib = await pdfJsReady;
+    const hasLocalData = data && data.byteLength > 0;
     const task = pdfjsLib.getDocument({
-      url: url,
+      ...(hasLocalData
+        ? { data: new Uint8Array(data) }
+        : { url: url }),
       cMapUrl: pdfJsAssets + 'cmaps/',
       cMapPacked: true,
       standardFontDataUrl: pdfJsAssets + 'standard_fonts/',
@@ -48,8 +51,9 @@
     url,
     requestedPage,
     maxDimension,
+    data,
   ) {
-    const pdf = await loadDocument(url);
+    const pdf = await loadDocument(url, data);
     const pageNumber = Math.max(
       1,
       Math.min(Number(requestedPage) || 1, pdf.numPages),
@@ -114,4 +118,6 @@
       function () {},
     );
   };
+
+  window.scholarsPdfRendererVersion = 2;
 })();
