@@ -2216,12 +2216,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
   Future<void> _toggleVideo() async {
     final nextValue = !_isVideoOff;
-    if (widget.isTeacher && _isRecording && nextValue) {
-      _showSnackBar(
-        'Save the recording before turning the camera off, otherwise the saved class will be black.',
-      );
-      return;
-    }
     _localVideoTrack?.enabled = !nextValue;
 
     if (mounted) {
