@@ -22,7 +22,6 @@ import '../services/firebase_upload_auth_service.dart';
 import '../services/live_class_lifecycle_policy.dart';
 import '../services/permission_service.dart';
 import '../theme/app_theme.dart';
-import '../components/universal_image.dart';
 import '../components/web_pdf_page_view.dart';
 import '../services/web_pdf_renderer.dart';
 
@@ -75,6 +74,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   static const Duration _participantHeartbeatInterval = Duration(seconds: 30);
   static const Duration _classEndConfirmationDelay = Duration(seconds: 5);
   static const int _maxStudentReconnectAttempts = 3;
+  static const int _maxSharedImageBytes = 100 * 1024 * 1024;
   static const int _maxSharedPdfBytes = 100 * 1024 * 1024;
   static const Map<String, dynamic> _preferredWebAudioConstraints =
       <String, dynamic>{
@@ -171,6 +171,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   int _sharedDocPageCount = 0;
   int _pdfReloadNonce = 0;
   PdfDocumentRef? _sharedPdfDocumentRef;
+  Uint8List? _sharedPdfBytes;
+  Object? _sharedPdfLoadError;
+  int _sharedPdfLoadGeneration = 0;
+  Uint8List? _sharedImageBytes;
+  Object? _sharedImageLoadError;
+  int _sharedImageLoadGeneration = 0;
   final TransformationController _documentTransformationController =
       TransformationController();
   double _documentZoom = 1.0;
@@ -3559,8 +3565,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         final newPageCount = _parseInt(doc['page_count']) ?? 0;
         final maxPage = newPageCount > 0 ? newPageCount : rawPage;
         final newPage = rawPage.clamp(1, maxPage).toInt();
+        final documentChanged =
+            newUrl != _sharedDocUrl || newType != _sharedDocType;
 
-        if (newUrl != _sharedDocUrl) {
+        if (documentChanged) {
+          _sharedImageLoadGeneration++;
+          _sharedPdfLoadGeneration++;
           _documentTransformationController.value = Matrix4.identity();
           setState(() {
             _sharedDocUrl = newUrl;
@@ -3572,10 +3582,18 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
             _isDocumentFullScreen = !widget.isTeacher && newUrl != null;
             _pdfReloadNonce = 0;
             _sharedPdfDocumentRef = null;
+            _sharedPdfBytes = null;
+            _sharedPdfLoadError = null;
+            _sharedImageBytes = null;
+            _sharedImageLoadError = null;
             _showWhiteboardToolbar = true;
           });
-          if (newUrl != null && newType == 'pdf' && !shouldUseWebPdfRenderer) {
-            unawaited(_prepareSharedPdfDocument(newUrl));
+          if (newUrl != null) {
+            if (newType == 'image') {
+              unawaited(_prepareSharedImage(newUrl));
+            } else if (newType == 'pdf') {
+              unawaited(_prepareSharedPdfDocument(newUrl));
+            }
           }
         } else {
           final pageChanged = newPage != _sharedDocPage;
@@ -3596,6 +3614,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         _recordPresentationEvent();
       } else {
         final wasSharing = _sharedDocUrl != null;
+        _sharedImageLoadGeneration++;
+        _sharedPdfLoadGeneration++;
         setState(() {
           _sharedDocUrl = null;
           _sharedDocName = null;
@@ -3603,6 +3623,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
           _sharedDocPage = 1;
           _sharedDocPageCount = 0;
           _sharedPdfDocumentRef = null;
+          _sharedPdfBytes = null;
+          _sharedPdfLoadError = null;
+          _sharedImageBytes = null;
+          _sharedImageLoadError = null;
           _documentZoom = 1.0;
           _isDocumentFullScreen = false;
           _localSharedFile = null;
@@ -3690,17 +3714,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     _lastRecordedPresentationState = stateKey;
   }
 
-  PdfDocumentRef _createSharedPdfDocumentRef(String url) {
-    return PdfDocumentRefUri(
-      Uri.parse(url),
-      key: PdfDocumentRefKey('$url#live-pdf-$_pdfReloadNonce'),
-      timeout: const Duration(minutes: 2),
-      // Full-file loading is more reliable than HTTP range/progressive reads
-      // for tokenized Firebase URLs on iPhone Safari.
-      useProgressiveLoading: false,
-    );
-  }
-
   PdfDocumentRef _createSharedPdfDataRef(Uint8List bytes, String url) {
     return PdfDocumentRefData(
       bytes,
@@ -3710,45 +3723,112 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     );
   }
 
-  Future<void> _prepareSharedPdfDocument(String url) async {
-    final reloadNonce = _pdfReloadNonce;
-    Uint8List? bytes;
-
-    // The teacher already selected the PDF. Reusing those bytes avoids a
-    // second cross-origin download, which intermittently fails on iOS Safari.
+  Future<Uint8List?> _readLocalSharedDocumentBytes() async {
     final localFile = _localSharedFile;
-    if (widget.isTeacher &&
-        localFile != null &&
-        localFile.name == _sharedDocName) {
-      bytes = localFile.bytes;
-      final localPath = localFile.path;
-      if (bytes == null && !kIsWeb && localPath != null) {
-        try {
-          bytes = await File(localPath).readAsBytes();
-        } catch (error, stackTrace) {
-          _reportNonFatalError('read selected PDF bytes', error, stackTrace);
-        }
-      }
+    if (!widget.isTeacher ||
+        localFile == null ||
+        localFile.name != _sharedDocName) {
+      return null;
     }
 
-    if (bytes == null) {
+    final bytes = localFile.bytes;
+    if (bytes != null) {
+      return bytes;
+    }
+
+    final localPath = localFile.path;
+    if (!kIsWeb && localPath != null) {
       try {
-        bytes = await FirebaseStorage.instance
-            .refFromURL(url)
-            .getData(_maxSharedPdfBytes);
+        return await File(localPath).readAsBytes();
       } catch (error, stackTrace) {
-        _reportNonFatalError('download shared PDF bytes', error, stackTrace);
+        _reportNonFatalError(
+          'read selected shared document bytes',
+          error,
+          stackTrace,
+        );
       }
     }
+    return null;
+  }
 
-    if (!mounted || _sharedDocUrl != url || _pdfReloadNonce != reloadNonce) {
+  Future<void> _prepareSharedImage(String url) async {
+    final generation = ++_sharedImageLoadGeneration;
+    Uint8List? bytes;
+    Object? loadError;
+
+    try {
+      bytes = await _readLocalSharedDocumentBytes();
+      bytes ??= await FirebaseStorage.instance
+          .refFromURL(url)
+          .getData(_maxSharedImageBytes);
+      if (bytes == null) {
+        throw StateError('Firebase Storage returned no image data.');
+      }
+    } catch (error, stackTrace) {
+      loadError = error;
+      _reportNonFatalError('download shared image bytes', error, stackTrace);
+    }
+
+    if (!mounted ||
+        _sharedDocUrl != url ||
+        _sharedDocType != 'image' ||
+        generation != _sharedImageLoadGeneration) {
       return;
     }
 
     setState(() {
-      _sharedPdfDocumentRef = bytes != null
+      _sharedImageBytes = bytes;
+      _sharedImageLoadError = loadError;
+    });
+  }
+
+  void _retrySharedImage() {
+    final url = _sharedDocUrl;
+    if (url == null || _sharedDocType != 'image' || !mounted) {
+      return;
+    }
+
+    _sharedImageLoadGeneration++;
+    setState(() {
+      _sharedImageBytes = null;
+      _sharedImageLoadError = null;
+    });
+    unawaited(_prepareSharedImage(url));
+  }
+
+  Future<void> _prepareSharedPdfDocument(String url) async {
+    final reloadNonce = _pdfReloadNonce;
+    final generation = ++_sharedPdfLoadGeneration;
+    Uint8List? bytes;
+    Object? loadError;
+
+    try {
+      bytes = await _readLocalSharedDocumentBytes();
+      bytes ??= await FirebaseStorage.instance
+          .refFromURL(url)
+          .getData(_maxSharedPdfBytes);
+      if (bytes == null) {
+        throw StateError('Firebase Storage returned no PDF data.');
+      }
+    } catch (error, stackTrace) {
+      loadError = error;
+      _reportNonFatalError('download shared PDF bytes', error, stackTrace);
+    }
+
+    if (!mounted ||
+        _sharedDocUrl != url ||
+        _sharedDocType != 'pdf' ||
+        _pdfReloadNonce != reloadNonce ||
+        generation != _sharedPdfLoadGeneration) {
+      return;
+    }
+
+    setState(() {
+      _sharedPdfBytes = bytes;
+      _sharedPdfLoadError = loadError;
+      _sharedPdfDocumentRef = bytes != null && !shouldUseWebPdfRenderer
           ? _createSharedPdfDataRef(bytes, url)
-          : _createSharedPdfDocumentRef(url);
+          : null;
     });
   }
 
@@ -3763,13 +3843,14 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       disposeWebPdfDocument(url);
     }
 
+    _sharedPdfLoadGeneration++;
     setState(() {
       _pdfReloadNonce++;
       _sharedPdfDocumentRef = null;
+      _sharedPdfBytes = null;
+      _sharedPdfLoadError = null;
     });
-    if (!useWebRenderer) {
-      unawaited(_prepareSharedPdfDocument(url));
-    }
+    unawaited(_prepareSharedPdfDocument(url));
   }
 
   void _resetDocumentZoom() {
@@ -4123,84 +4204,95 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   Widget _buildSharedImageView() {
-    final localFile = _localSharedFile;
-    Widget? image;
-    if (widget.isTeacher && localFile != null) {
-      if (kIsWeb) {
-        final bytes = localFile.bytes;
-        if (bytes != null) {
-          image = Image.memory(bytes, fit: BoxFit.contain);
-        }
-      } else {
-        final path = localFile.path;
-        if (path != null) {
-          image = Image.file(File(path), fit: BoxFit.contain);
-        }
+    final bytes = _sharedImageBytes;
+    if (bytes == null) {
+      if (_sharedImageLoadError != null) {
+        return _buildSharedImageError();
       }
+      return const Center(
+        child: CircularProgressIndicator(color: AppColors.primaryNavy),
+      );
     }
 
-    image ??= UniversalImage(
-      key: ValueKey<String>('shared-image-${_sharedDocUrl!}'),
-      imageUrl: _sharedDocUrl!,
-      fit: BoxFit.contain,
-      loadingBuilder: (context, child, loadingProgress) {
-        if (loadingProgress == null) {
-          return child;
-        }
-        return const Center(
-          child: CircularProgressIndicator(color: AppColors.primaryNavy),
-        );
-      },
-      errorBuilder: (context, error, stackTrace) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(
-                Icons.broken_image_rounded,
-                color: Colors.grey,
-                size: 48,
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'Shared image could not be displayed',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Colors.black87,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: () => unawaited(
-                  launchUrl(
-                    Uri.parse(_sharedDocUrl!),
-                    mode: LaunchMode.externalApplication,
-                  ),
-                ),
-                icon: const Icon(Icons.open_in_new_rounded),
-                label: const Text('Open externally'),
-              ),
-            ],
-          ),
-        ),
+    final image = Image.memory(
+      bytes,
+      key: ValueKey<String>(
+        'shared-image-${_sharedDocUrl!}-${bytes.lengthInBytes}',
       ),
+      fit: BoxFit.contain,
+      gaplessPlayback: true,
+      errorBuilder: (context, error, stackTrace) => _buildSharedImageError(),
     );
     return _buildZoomableSharedDocument(image);
   }
 
+  Widget _buildSharedImageError() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.broken_image_rounded,
+              color: Colors.grey,
+              size: 48,
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Shared image could not be displayed',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.black87,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 10,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: _retrySharedImage,
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('Retry image'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => unawaited(
+                    launchUrl(
+                      Uri.parse(_sharedDocUrl!),
+                      mode: LaunchMode.externalApplication,
+                    ),
+                  ),
+                  icon: const Icon(Icons.open_in_new_rounded),
+                  label: const Text('Open externally'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildPdfView() {
+    final pdfBytes = _sharedPdfBytes;
+    if (pdfBytes == null) {
+      if (_sharedPdfLoadError != null) {
+        return _buildSharedPdfError();
+      }
+      return const Center(
+        child: CircularProgressIndicator(color: AppColors.primaryNavy),
+      );
+    }
+
     if (shouldUseWebPdfRenderer) {
-      final localPdfBytes =
-          widget.isTeacher && _localSharedFile?.name == _sharedDocName
-          ? _localSharedFile?.bytes
-          : null;
       return _buildZoomableSharedDocument(
         WebPdfPageView(
           key: ValueKey<String>('web-pdf-${_sharedDocUrl!}'),
           url: _sharedDocUrl!,
-          data: localPdfBytes,
+          data: pdfBytes,
           pageNumber: _sharedDocPage,
           reloadNonce: _pdfReloadNonce,
           onDocumentLoaded: _handleSharedPdfPageCount,
@@ -4221,53 +4313,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         child: CircularProgressIndicator(color: AppColors.primaryNavy),
       ),
       errorBuilder: (context, error, stackTrace) {
-        return Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(
-                  Icons.picture_as_pdf_rounded,
-                  size: 56,
-                  color: Colors.redAccent,
-                ),
-                const SizedBox(height: 12),
-                const Text(
-                  'PDF could not be displayed',
-                  style: TextStyle(
-                    color: Colors.black87,
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  alignment: WrapAlignment.center,
-                  spacing: 10,
-                  runSpacing: 8,
-                  children: [
-                    FilledButton.icon(
-                      onPressed: _retrySharedPdf,
-                      icon: const Icon(Icons.refresh_rounded),
-                      label: const Text('Retry PDF'),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: () => unawaited(
-                        launchUrl(
-                          Uri.parse(_sharedDocUrl!),
-                          mode: LaunchMode.externalApplication,
-                        ),
-                      ),
-                      icon: const Icon(Icons.open_in_new_rounded),
-                      label: const Text('Open externally'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        );
+        return _buildSharedPdfError();
       },
       builder: (context, document) {
         if (document == null || document.pages.isEmpty) {
@@ -4289,6 +4335,56 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
           ),
         );
       },
+    );
+  }
+
+  Widget _buildSharedPdfError() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.picture_as_pdf_rounded,
+              size: 56,
+              color: Colors.redAccent,
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'PDF could not be displayed',
+              style: TextStyle(
+                color: Colors.black87,
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 10,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: _retrySharedPdf,
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('Retry PDF'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => unawaited(
+                    launchUrl(
+                      Uri.parse(_sharedDocUrl!),
+                      mode: LaunchMode.externalApplication,
+                    ),
+                  ),
+                  icon: const Icon(Icons.open_in_new_rounded),
+                  label: const Text('Open externally'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 

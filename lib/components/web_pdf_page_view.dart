@@ -70,18 +70,13 @@ class _WebPdfPageViewState extends State<WebPdfPageView> {
         data: widget.data,
       ).timeout(const Duration(seconds: 45));
       if (!mounted || generation != _loadGeneration) {
-        revokeWebPdfPageImage(result.imageUrl);
         return;
       }
 
-      final oldResult = _result;
       setState(() {
         _result = result;
         _error = null;
       });
-      if (oldResult != null) {
-        revokeWebPdfPageImage(oldResult.imageUrl);
-      }
       widget.onDocumentLoaded(result.pageCount);
     } catch (error) {
       if (mounted && generation == _loadGeneration) {
@@ -95,10 +90,6 @@ class _WebPdfPageViewState extends State<WebPdfPageView> {
   @override
   void dispose() {
     _loadGeneration++;
-    final result = _result;
-    if (result != null) {
-      revokeWebPdfPageImage(result.imageUrl);
-    }
     disposeWebPdfDocument(widget.url);
     super.dispose();
   }
@@ -151,9 +142,8 @@ class _WebPdfPageViewState extends State<WebPdfPageView> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    return Image.network(
-      result.imageUrl,
-      key: ValueKey<String>(result.imageUrl),
+    return Image.memory(
+      result.imageBytes,
       fit: BoxFit.contain,
       gaplessPlayback: true,
       errorBuilder: (context, error, stackTrace) => Center(

@@ -96,13 +96,9 @@
     canvas.width = 1;
     canvas.height = 1;
     return {
-      imageUrl: URL.createObjectURL(blob),
+      imageBytes: new Uint8Array(await blob.arrayBuffer()),
       pageCount: pdf.numPages,
     };
-  };
-
-  window.scholarsRevokePdfPageImage = function (imageUrl) {
-    URL.revokeObjectURL(imageUrl);
   };
 
   window.scholarsDisposePdfDocument = function (url) {
@@ -119,5 +115,5 @@
     );
   };
 
-  window.scholarsPdfRendererVersion = 2;
+  window.scholarsPdfRendererVersion = 3;
 })();

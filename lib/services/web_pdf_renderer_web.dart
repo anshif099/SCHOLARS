@@ -5,10 +5,12 @@ import 'dart:typed_data';
 
 import 'package:web/web.dart' as web;
 
-class WebPdfPageResult {
-  const WebPdfPageResult({required this.imageUrl, required this.pageCount});
+import 'mobile_web_pdf_policy.dart';
 
-  final String imageUrl;
+class WebPdfPageResult {
+  const WebPdfPageResult({required this.imageBytes, required this.pageCount});
+
+  final Uint8List imageBytes;
   final int pageCount;
 }
 
@@ -20,28 +22,22 @@ external JSPromise<_WebPdfPageResult> _renderPdfPage(
   JSUint8Array? data,
 );
 
-@JS('scholarsRevokePdfPageImage')
-external void _revokePdfPageImage(String imageUrl);
-
 @JS('scholarsDisposePdfDocument')
 external void _disposePdfDocument(String url);
 
 @JS()
 extension type _WebPdfPageResult(JSObject _) implements JSObject {
-  external String get imageUrl;
+  external JSUint8Array get imageBytes;
   external int get pageCount;
 }
 
 bool get shouldUseWebPdfRenderer {
   final navigator = web.window.navigator;
-  final userAgent = navigator.userAgent;
-  final isIos = RegExp(
-    r'iPad|iPhone|iPod',
-    caseSensitive: false,
-  ).hasMatch(userAgent);
-  final isDesktopModeIpad =
-      navigator.platform == 'MacIntel' && navigator.maxTouchPoints > 1;
-  return isIos || isDesktopModeIpad;
+  return shouldUseMobileWebPdfRenderer(
+    userAgent: navigator.userAgent,
+    platform: navigator.platform,
+    maxTouchPoints: navigator.maxTouchPoints,
+  );
 }
 
 Future<void>? _rendererLoadFuture;
@@ -50,7 +46,7 @@ bool get _isRendererLoaded {
   final version = globalContext.getProperty<JSNumber?>(
     'scholarsPdfRendererVersion'.toJS,
   );
-  return version?.toDartInt == 2;
+  return version?.toDartInt == 3;
 }
 
 Future<void> _ensureRendererLoaded() {
@@ -65,7 +61,7 @@ Future<void> _loadRendererScript() async {
     ..type = 'text/javascript'
     ..src = Uri.parse(
       web.document.baseURI,
-    ).resolve('pdfjs/pdf_renderer.js?v=2').toString();
+    ).resolve('pdfjs/pdf_renderer.js?v=3').toString();
   final completer = Completer<void>();
   final loadSubscription = script.onLoad.listen((_) {
     if (!completer.isCompleted) {
@@ -108,15 +104,9 @@ Future<WebPdfPageResult> renderWebPdfPage({
     data?.toJS,
   ).toDart;
   return WebPdfPageResult(
-    imageUrl: result.imageUrl,
+    imageBytes: result.imageBytes.toDart,
     pageCount: result.pageCount,
   );
-}
-
-void revokeWebPdfPageImage(String imageUrl) {
-  if (imageUrl.startsWith('blob:')) {
-    _revokePdfPageImage(imageUrl);
-  }
 }
 
 void disposeWebPdfDocument(String url) => _disposePdfDocument(url);

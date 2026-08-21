@@ -1,9 +1,9 @@
 import 'dart:typed_data';
 
 class WebPdfPageResult {
-  const WebPdfPageResult({required this.imageUrl, required this.pageCount});
+  const WebPdfPageResult({required this.imageBytes, required this.pageCount});
 
-  final String imageUrl;
+  final Uint8List imageBytes;
   final int pageCount;
 }
 
@@ -19,7 +19,5 @@ Future<WebPdfPageResult> renderWebPdfPage({
     'The web PDF renderer is only available in a browser.',
   );
 }
-
-void revokeWebPdfPageImage(String imageUrl) {}
 
 void disposeWebPdfDocument(String url) {}
