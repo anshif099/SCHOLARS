@@ -31,8 +31,8 @@ android {
 
     defaultConfig {
         applicationId = "com.academy.scholars"
-        // Android 12 (API 31) and newer only.
-        minSdk = 31
+        // Android 11 (API 30) and newer only.
+        minSdk = 30
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
