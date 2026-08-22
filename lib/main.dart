@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'firebase_options.dart';
+import 'components/android_update_gate.dart';
 import 'pages/admin_dashboard_page.dart';
 import 'pages/landing_page.dart';
 import 'pages/live_video_room_page.dart';
@@ -95,7 +96,7 @@ class ScholarsApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
       navigatorKey: navigatorKey,
-      home: const _AuthGate(),
+      home: const AndroidUpdateGate(child: _AuthGate()),
     );
   }
 }

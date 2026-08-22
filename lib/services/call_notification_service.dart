@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../pages/live_video_room_page.dart';
 import '../main.dart';
 import 'call_manager.dart';
+import 'live_class_lifecycle_policy.dart';
 
 /// Watches a student's class for live-class events and shows a full-screen
 /// incoming-call notification (via [CallManager] / flutter_callkit_incoming).
@@ -209,7 +210,7 @@ class CallNotificationService {
         }
 
         final liveData = Map<String, dynamic>.from(rawValue);
-        if (liveData['is_live'] != true) {
+        if (!LiveClassLifecyclePolicy.isJoinableSnapshot(liveData)) {
           return;
         }
 

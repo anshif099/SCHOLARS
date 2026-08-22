@@ -19,6 +19,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'note_image_viewer_page.dart';
 import '../services/firebase_upload_auth_service.dart';
+import '../services/live_class_lifecycle_policy.dart';
 import '../components/fresh_stream_builder.dart';
 import '../components/universal_image.dart';
 import '../components/camera_mic_access_dialog.dart';
@@ -72,6 +73,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   int _selectedIndex = 0;
   final Set<String> _myCommonClassIds = {};
   StreamSubscription<DatabaseEvent>? _teachersSub;
+  Timer? _liveClassExpiryTimer;
   bool _isLoggingOut = false;
   bool _isJoiningLiveCall = false;
 
@@ -93,6 +95,11 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   @override
   void initState() {
     super.initState();
+    _liveClassExpiryTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) {
+        setState(() {});
+      }
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await PermissionService.requestAllPermissions();
       _ensureCallNotificationsReady(showResult: widget.showNotificationWarning);
@@ -129,8 +136,33 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
 
   @override
   void dispose() {
+    _liveClassExpiryTimer?.cancel();
     _teachersSub?.cancel();
     super.dispose();
+  }
+
+  bool _isJoinableLiveClass(Object? value) {
+    return LiveClassLifecyclePolicy.isJoinableSnapshot(value);
+  }
+
+  Future<bool> _joinLiveClassIfAvailable(String classId) async {
+    try {
+      final snapshot = await FirebaseDatabase.instance
+          .ref()
+          .child('live_classes')
+          .child(classId)
+          .get();
+      final value = snapshot.value;
+      if (!snapshot.exists || value is! Map || !_isJoinableLiveClass(value)) {
+        return false;
+      }
+
+      await _joinCall(classId, value['topic']?.toString() ?? 'Live Class');
+      return true;
+    } catch (error) {
+      debugPrint('Live class availability check failed: $error');
+      return false;
+    }
   }
 
   Future<void> _ensureCallNotificationsReady({required bool showResult}) async {
@@ -1035,7 +1067,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                   entry.value as Map,
                 );
 
-                final isLive = classData['is_live'] == true;
+                final isLive = _isJoinableLiveClass(classData);
                 final liveTopic = classData['topic'] ?? 'Live Class';
 
                 if (isLive &&
@@ -1045,7 +1077,12 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                     Padding(
                       padding: const EdgeInsets.only(top: 24),
                       child: GestureDetector(
-                        onTap: () => _joinCall(classId, liveTopic),
+                        onTap: () async {
+                          if (!await _joinLiveClassIfAvailable(classId) &&
+                              mounted) {
+                            _showNoLiveClass();
+                          }
+                        },
                         child: Container(
                           padding: const EdgeInsets.all(20),
                           decoration: BoxDecoration(
@@ -1168,37 +1205,14 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
               child: GestureDetector(
                 onTap: () async {
                   final mainClassId = widget.studentData['class_id'];
-                  if (mainClassId != null) {
-                    final snapshot = await FirebaseDatabase.instance
-                        .ref()
-                        .child('live_classes')
-                        .child(mainClassId)
-                        .get();
-                    if (snapshot.exists) {
-                      final data = Map<dynamic, dynamic>.from(
-                        snapshot.value as Map,
-                      );
-                      if (data['is_live'] == true) {
-                        _joinCall(mainClassId, data['topic'] ?? 'Live Class');
-                        return;
-                      }
-                    }
+                  if (mainClassId != null &&
+                      await _joinLiveClassIfAvailable(mainClassId.toString())) {
+                    return;
                   }
 
                   for (var commonClassId in _myCommonClassIds) {
-                    final snapshot = await FirebaseDatabase.instance
-                        .ref()
-                        .child('live_classes')
-                        .child(commonClassId)
-                        .get();
-                    if (snapshot.exists) {
-                      final data = Map<dynamic, dynamic>.from(
-                        snapshot.value as Map,
-                      );
-                      if (data['is_live'] == true) {
-                        _joinCall(commonClassId, data['topic'] ?? 'Live Class');
-                        return;
-                      }
+                    if (await _joinLiveClassIfAvailable(commonClassId)) {
+                      return;
                     }
                   }
 
@@ -1546,24 +1560,11 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                     false,
                     onTap: () async {
                       final classId = widget.studentData['class_id'];
-                      if (classId != null) {
-                        final snapshot = await FirebaseDatabase.instance
-                            .ref()
-                            .child('live_classes')
-                            .child(classId)
-                            .get();
-                        if (snapshot.exists) {
-                          final data = Map<dynamic, dynamic>.from(
-                            snapshot.value as Map,
-                          );
-                          if (data['is_live'] == true) {
-                            await _joinCall(
-                              classId.toString(),
-                              data['topic']?.toString() ?? 'Live Class',
-                            );
-                            return;
-                          }
-                        }
+                      if (classId != null &&
+                          await _joinLiveClassIfAvailable(classId.toString())) {
+                        return;
+                      }
+                      if (mounted) {
                         _showNoLiveClass();
                       }
                     },
