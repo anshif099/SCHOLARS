@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:chewie/chewie.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_pdfview/flutter_pdfview.dart';
@@ -13,6 +14,8 @@ import 'package:video_player/video_player.dart';
 import '../services/video_web_helper.dart';
 import '../theme/app_theme.dart';
 import '../components/universal_image.dart';
+import '../components/web_pdf_page_view.dart';
+import '../services/web_pdf_renderer.dart';
 import 'webm_video_player_page.dart';
 
 class VideoPlayerPage extends StatefulWidget {
@@ -76,6 +79,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   static const Duration _initializationTimeout = Duration(seconds: 15);
   static const Duration _bufferingTimeout = Duration(seconds: 30);
   static const Duration _disposalTimeout = Duration(seconds: 3);
+  static const int _maxPresentationPdfBytes = 100 * 1024 * 1024;
 
   VideoPlayerController? _videoPlayerController;
   ChewieController? _chewieController;
@@ -90,8 +94,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   PDFViewController? _presentationPdfController;
   String? _presentationPdfUrl;
   String? _presentationPdfPath;
+  Uint8List? _presentationPdfBytes;
+  Object? _presentationPdfLoadError;
   bool _isLoadingPresentationPdf = false;
   int _pdfDownloadGeneration = 0;
+  int _webPdfReloadNonce = 0;
 
   @override
   void initState() {
@@ -458,20 +465,64 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   }
 
   Future<void> _preparePresentationPdf(Map<String, dynamic> event) async {
-    if (kIsWeb) return;
-
     final url = event['url']?.toString();
     if (url == null || url.isEmpty) return;
     final page = ((event['page'] as num?)?.toInt() ?? 1).clamp(1, 1000000);
 
-    if (_presentationPdfUrl == url && _presentationPdfPath != null) {
-      await _presentationPdfController?.setPage(page - 1);
-      return;
+    if (_presentationPdfUrl == url) {
+      if (_isLoadingPresentationPdf) return;
+      if (kIsWeb && _presentationPdfBytes != null) return;
+      if (!kIsWeb && _presentationPdfPath != null) {
+        await _presentationPdfController?.setPage(page - 1);
+        return;
+      }
     }
 
+    final previousPdfPath = _presentationPdfUrl != url
+        ? _presentationPdfPath
+        : null;
     final generation = ++_pdfDownloadGeneration;
     if (mounted) {
-      setState(() => _isLoadingPresentationPdf = true);
+      setState(() {
+        if (_presentationPdfUrl != url) {
+          _presentationPdfBytes = null;
+          _presentationPdfPath = null;
+        }
+        _presentationPdfUrl = url;
+        _presentationPdfLoadError = null;
+        _isLoadingPresentationPdf = true;
+      });
+    }
+    if (!kIsWeb && previousPdfPath != null) {
+      try {
+        await File(previousPdfPath).delete();
+      } catch (_) {}
+    }
+
+    if (kIsWeb) {
+      try {
+        final bytes = await FirebaseStorage.instance
+            .refFromURL(url)
+            .getData(_maxPresentationPdfBytes);
+        if (bytes == null) {
+          throw StateError('Firebase Storage returned no PDF data.');
+        }
+        if (!mounted || generation != _pdfDownloadGeneration) return;
+        setState(() {
+          _presentationPdfBytes = bytes;
+          _presentationPdfLoadError = null;
+          _isLoadingPresentationPdf = false;
+        });
+      } catch (error) {
+        debugPrint('Recorded presentation PDF could not be loaded: $error');
+        if (mounted && generation == _pdfDownloadGeneration) {
+          setState(() {
+            _presentationPdfLoadError = error;
+            _isLoadingPresentationPdf = false;
+          });
+        }
+      }
+      return;
     }
 
     HttpClient? client;
@@ -498,8 +549,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
 
       final previousPath = _presentationPdfPath;
       setState(() {
-        _presentationPdfUrl = url;
         _presentationPdfPath = file.path;
+        _presentationPdfLoadError = null;
         _isLoadingPresentationPdf = false;
       });
       if (previousPath != null && previousPath != file.path) {
@@ -510,7 +561,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     } catch (error) {
       debugPrint('Recorded presentation PDF could not be loaded: $error');
       if (mounted && generation == _pdfDownloadGeneration) {
-        setState(() => _isLoadingPresentationPdf = false);
+        setState(() {
+          _presentationPdfLoadError = error;
+          _isLoadingPresentationPdf = false;
+        });
       }
     } finally {
       client?.close(force: true);
@@ -610,7 +664,32 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
 
   Widget _buildRecordedPdf(String url, int page) {
     if (kIsWeb) {
-      return _buildPresentationError('PDF shared • Page $page');
+      if (_presentationPdfUrl == url && _presentationPdfLoadError != null) {
+        return _buildPresentationError('Shared PDF unavailable');
+      }
+      final pdfBytes = _presentationPdfUrl == url
+          ? _presentationPdfBytes
+          : null;
+      if (_isLoadingPresentationPdf || pdfBytes == null) {
+        return const Center(
+          child: CircularProgressIndicator(color: Colors.white),
+        );
+      }
+      return ColoredBox(
+        color: Colors.white,
+        child: WebPdfPageView(
+          key: ValueKey<String>('recorded-web-pdf-$url'),
+          url: url,
+          data: pdfBytes,
+          pageNumber: page,
+          reloadNonce: _webPdfReloadNonce,
+          onDocumentLoaded: (_) {},
+          onRetry: () => _retryPresentationPdf(url, page),
+        ),
+      );
+    }
+    if (_presentationPdfUrl == url && _presentationPdfLoadError != null) {
+      return _buildPresentationError('Shared PDF unavailable');
     }
     if (_isLoadingPresentationPdf ||
         _presentationPdfUrl != url ||
@@ -632,6 +711,22 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
         _presentationPdfController = controller;
         controller.setPage(page - 1);
       },
+    );
+  }
+
+  void _retryPresentationPdf(String url, int page) {
+    if (kIsWeb) {
+      disposeWebPdfDocument(url);
+    }
+    _pdfDownloadGeneration++;
+    setState(() {
+      _webPdfReloadNonce++;
+      _presentationPdfBytes = null;
+      _presentationPdfLoadError = null;
+      _isLoadingPresentationPdf = false;
+    });
+    unawaited(
+      _preparePresentationPdf(<String, dynamic>{'url': url, 'page': page}),
     );
   }
 
