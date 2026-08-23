@@ -2529,7 +2529,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
       final recordedMime = _webRecordingHelper.recordedMimeType;
       final fileExtension = recordedMime.contains('mp4') ? 'mp4' : 'webm';
-      final requiresCompatibilityConversion = fileExtension == 'webm';
 
       fileSizeBytes = _webRecordingHelper.recordedSizeBytes;
       storagePath =
@@ -2552,9 +2551,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         'storage_path': storagePath,
         'file_size_bytes': fileSizeBytes,
         'mime_type': recordedMime,
-        'compatibility_status': requiresCompatibilityConversion
-            ? 'waiting'
-            : 'ready',
+        // Browser MP4 can be fragmented and report 00:00 duration on Android,
+        // so every web recording is normalized to a seekable fast-start MP4.
+        'compatibility_status': 'waiting',
         'upload_progress': 0,
         'upload_updated_at': DateTime.now().millisecondsSinceEpoch,
       });

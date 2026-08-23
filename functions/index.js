@@ -56,26 +56,41 @@ async function findRecordedClass(classId, storagePath) {
 }
 
 /**
- * Converts browser-only WebM recordings into H.264/AAC fast-start MP4 files.
- * The database URL is switched only after the compatible object is complete;
- * the source WebM is retained as a recoverable original.
+ * Converts browser recordings into seekable H.264/AAC fast-start MP4 files.
+ * Browser-created MP4 can be fragmented and report a zero duration to Android
+ * even while it plays, so MP4 inputs are normalized as well as WebM inputs.
+ * The source object is retained as a recoverable original.
  */
-async function transcodeRecordedWebm(object, initialRecordedClassRef = null) {
+async function makeRecordedClassCompatible(
+  object,
+  initialRecordedClassRef = null
+) {
   const bucketName = object.bucket || STORAGE_BUCKET;
   const sourcePath = object.name || "";
-  const match = sourcePath.match(/^recorded_classes\/([^/]+)\/(.+)\.webm$/i);
-  if (!match) {
+  const match = sourcePath.match(
+    /^recorded_classes\/([^/]+)\/(.+)\.(webm|mp4)$/i
+  );
+  const sourceMetadata = object.metadata || {};
+  if (
+    !match ||
+    /_compatible\.mp4$/i.test(sourcePath) ||
+    sourceMetadata.convertedFrom
+  ) {
     return;
   }
 
   const classId = match[1];
-  const destinationPath = sourcePath.replace(/\.webm$/i, ".mp4");
+  const sourceExtension = match[3].toLowerCase();
+  const destinationPath = sourceExtension === "webm"
+    ? sourcePath.replace(/\.webm$/i, ".mp4")
+    : sourcePath.replace(/\.mp4$/i, "_compatible.mp4");
   const workId = randomUUID();
-  const inputPath = path.join(os.tmpdir(), `${workId}.webm`);
-  const outputPath = path.join(os.tmpdir(), `${workId}.mp4`);
+  const inputPath = path.join(os.tmpdir(), `${workId}.${sourceExtension}`);
+  const outputPath = path.join(os.tmpdir(), `${workId}_compatible.mp4`);
   const bucket = admin.storage().bucket(bucketName);
   const sourceContentType = String(object.contentType || "").toLowerCase();
-  const canCopyH264Video = sourceContentType.includes("h264");
+  const canCopyH264Video =
+    sourceContentType.includes("h264") || sourceContentType.includes("avc1");
   let recordedClassRef =
     initialRecordedClassRef || (await findRecordedClass(classId, sourcePath));
 
@@ -146,7 +161,7 @@ async function transcodeRecordedWebm(object, initialRecordedClassRef = null) {
         contentType: "video/mp4",
         cacheControl: "public,max-age=3600",
         metadata: {
-          ...(object.metadata || {}),
+          ...sourceMetadata,
           firebaseStorageDownloadTokens: downloadToken,
           convertedFrom: sourcePath,
           sourceGeneration: String(object.generation || ""),
@@ -176,7 +191,7 @@ async function transcodeRecordedWebm(object, initialRecordedClassRef = null) {
       compatibility_updated_at: admin.database.ServerValue.TIMESTAMP,
     });
 
-    logger.info("Converted recorded class WebM to MP4.", {
+    logger.info("Made recorded class video seekable and compatible.", {
       classId,
       sourcePath,
       destinationPath,
@@ -184,7 +199,7 @@ async function transcodeRecordedWebm(object, initialRecordedClassRef = null) {
       copiedH264Video: canCopyH264Video,
     });
   } catch (error) {
-    logger.error("Recorded class WebM conversion failed.", {
+    logger.error("Recorded class compatibility conversion failed.", {
       classId,
       sourcePath,
       error,
@@ -216,10 +231,10 @@ exports.transcodeRecordedWebmToMp4 = functions
   .runWith(transcodeOptions)
   .storage.bucket(STORAGE_BUCKET)
   .object()
-  .onFinalize((object) => transcodeRecordedWebm(object));
+  .onFinalize((object) => makeRecordedClassCompatible(object));
 
-// Existing WebM files predate the Storage trigger. An iPhone client can mark
-// one as requested; this path converts it without replacing the source file.
+// Existing recordings predate the Storage trigger. A client or administrator
+// can request normalization without replacing the recoverable source file.
 exports.transcodeRequestedRecordedWebmToMp4 = functions
   .region("us-central1")
   .runWith(transcodeOptions)
@@ -235,13 +250,16 @@ exports.transcodeRequestedRecordedWebmToMp4 = functions
     const snapshot = await recordedClassRef.once("value");
     const recording = snapshot.val() || {};
     const sourcePath = String(recording.storage_path || "");
-    if (!/\.webm$/i.test(sourcePath) || recording.compatibility_status === "ready") {
+    if (
+      !/\.(webm|mp4)$/i.test(sourcePath) ||
+      /_compatible\.mp4$/i.test(sourcePath)
+    ) {
       return;
     }
 
     const file = admin.storage().bucket(STORAGE_BUCKET).file(sourcePath);
     const [metadata] = await file.getMetadata();
-    await transcodeRecordedWebm(metadata, recordedClassRef);
+    await makeRecordedClassCompatible(metadata, recordedClassRef);
   });
 
 exports.notifyStudentsOnLiveClassStart = functions.database

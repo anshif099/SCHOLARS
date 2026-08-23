@@ -334,7 +334,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
 
     _chewieController = ChewieController(
       videoPlayerController: _videoPlayerController!,
-      autoPlay: !kIsWeb,
+      autoPlay: false,
       looping: false,
       aspectRatio: aspectRatio <= 0 ? 4 / 3 : aspectRatio,
       allowPlaybackSpeedChanging: true,
@@ -591,6 +591,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
             Positioned.fill(
               bottom: 72,
               child: IgnorePointer(
+                ignoring:
+                    _activePresentation?['file_type']?.toString() != 'pdf',
                 child: _buildPresentation(_activePresentation!),
               ),
             ),
@@ -665,7 +667,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   Widget _buildRecordedPdf(String url, int page) {
     if (kIsWeb) {
       if (_presentationPdfUrl == url && _presentationPdfLoadError != null) {
-        return _buildPresentationError('Shared PDF unavailable');
+        return _buildPresentationError(
+          'Shared PDF unavailable',
+          onRetry: () => _retryPresentationPdf(url, page),
+        );
       }
       final pdfBytes = _presentationPdfUrl == url
           ? _presentationPdfBytes
@@ -689,7 +694,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       );
     }
     if (_presentationPdfUrl == url && _presentationPdfLoadError != null) {
-      return _buildPresentationError('Shared PDF unavailable');
+      return _buildPresentationError(
+        'Shared PDF unavailable',
+        onRetry: () => _retryPresentationPdf(url, page),
+      );
     }
     if (_isLoadingPresentationPdf ||
         _presentationPdfUrl != url ||
@@ -730,7 +738,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     );
   }
 
-  Widget _buildPresentationError(String message) {
+  Widget _buildPresentationError(String message, {VoidCallback? onRetry}) {
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -746,6 +754,14 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
             textAlign: TextAlign.center,
             style: GoogleFonts.poppins(color: Colors.white70, fontSize: 14),
           ),
+          if (onRetry != null) ...[
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Retry PDF'),
+            ),
+          ],
         ],
       ),
     );
