@@ -62,7 +62,6 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   int _selectedIndex = 0;
   final Set<String> _myCommonClassIds = {};
   StreamSubscription<DatabaseEvent>? _teachersSub;
-  Timer? _liveClassExpiryTimer;
   bool _isLoggingOut = false;
   bool _isJoiningLiveCall = false;
 
@@ -84,11 +83,6 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   @override
   void initState() {
     super.initState();
-    _liveClassExpiryTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (mounted) {
-        setState(() {});
-      }
-    });
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await PermissionService.requestAllPermissions();
       _ensureCallNotificationsReady(showResult: widget.showNotificationWarning);
@@ -125,13 +119,12 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
 
   @override
   void dispose() {
-    _liveClassExpiryTimer?.cancel();
     _teachersSub?.cancel();
     super.dispose();
   }
 
-  bool _isJoinableLiveClass(Object? value) {
-    return LiveClassLifecyclePolicy.isJoinableSnapshot(value);
+  bool _shouldShowStudentJoinOption(Object? value) {
+    return LiveClassLifecyclePolicy.shouldShowStudentJoinOption(value);
   }
 
   Future<bool> _joinLiveClassIfAvailable(String classId) async {
@@ -142,7 +135,9 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
           .child(classId)
           .get();
       final value = snapshot.value;
-      if (!snapshot.exists || value is! Map || !_isJoinableLiveClass(value)) {
+      if (!snapshot.exists ||
+          value is! Map ||
+          !_shouldShowStudentJoinOption(value)) {
         return false;
       }
 
@@ -1056,7 +1051,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
                   entry.value as Map,
                 );
 
-                final isLive = _isJoinableLiveClass(classData);
+                final isLive = _shouldShowStudentJoinOption(classData);
                 final liveTopic = classData['topic'] ?? 'Live Class';
 
                 if (isLive &&

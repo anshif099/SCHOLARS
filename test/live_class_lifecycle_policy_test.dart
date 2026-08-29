@@ -46,6 +46,41 @@ void main() {
       );
     });
 
+    group('student dashboard join option', () {
+      test(
+        'stays visible for the full active class even with an old heartbeat',
+        () {
+          expect(
+            LiveClassLifecyclePolicy.shouldShowStudentJoinOption(
+              <String, dynamic>{
+                'is_live': true,
+                'participants': <String, dynamic>{
+                  'teacher-id': <String, dynamic>{
+                    'role': 'teacher',
+                    'last_seen': 1,
+                  },
+                },
+              },
+            ),
+            isTrue,
+          );
+        },
+      );
+
+      test('is hidden as soon as the class is ended or removed', () {
+        expect(
+          LiveClassLifecyclePolicy.shouldShowStudentJoinOption(
+            <String, dynamic>{'is_live': false},
+          ),
+          isFalse,
+        );
+        expect(
+          LiveClassLifecyclePolicy.shouldShowStudentJoinOption(null),
+          isFalse,
+        );
+      });
+    });
+
     group('joinable live class', () {
       final now = DateTime.fromMillisecondsSinceEpoch(200000);
 

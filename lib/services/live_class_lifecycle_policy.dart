@@ -11,6 +11,16 @@ class LiveClassLifecyclePolicy {
     return value is Map && value['is_live'] == true;
   }
 
+  /// The student dashboard must offer an active class for its full lifetime,
+  /// including when the student opens the app after the incoming-call alert.
+  /// Teacher presence is intentionally not checked here: presence timestamps
+  /// are only a safeguard for notification delivery and can be delayed by
+  /// mobile/web timer throttling. The teacher ends the dashboard offer by
+  /// setting `is_live` to false or removing the live-class record.
+  static bool shouldShowStudentJoinOption(Object? value) {
+    return isActiveSnapshot(value);
+  }
+
   static bool isJoinableSnapshot(
     Object? value, {
     DateTime? now,
