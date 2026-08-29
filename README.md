@@ -1,17 +1,20 @@
-# scholars
+# Scholars
 
-A new Flutter project.
+Distance-learning application for Scholars Academy.
 
-## Getting Started
+## Reliable live-class networking
 
-This project is a starting point for a Flutter application.
+The app always includes STUN discovery. Production builds should also provide
+a TURN relay so teacher/student calls work when the two Android devices are on
+different mobile or Wi-Fi networks:
 
-A few resources to get you started if this is your first Flutter project:
+```powershell
+flutter build apk --release `
+  --dart-define=WEBRTC_TURN_URLS="turn:relay.example.com:3478?transport=udp,turn:relay.example.com:3478?transport=tcp,turns:relay.example.com:5349" `
+  --dart-define=WEBRTC_TURN_USERNAME="temporary-username" `
+  --dart-define=WEBRTC_TURN_CREDENTIAL="temporary-password"
+```
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Use short-lived TURN credentials from your relay provider in CI/release builds;
+do not commit credentials to this repository. If any of the three values are
+missing, the app safely falls back to STUN-only connectivity.

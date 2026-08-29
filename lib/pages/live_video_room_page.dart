@@ -24,6 +24,7 @@ import '../services/permission_service.dart';
 import '../theme/app_theme.dart';
 import '../components/web_pdf_page_view.dart';
 import '../services/web_pdf_renderer.dart';
+import '../services/webrtc_ice_server_config.dart';
 
 class LiveVideoRoomPage extends StatefulWidget {
   static final Set<String> _activeSessionKeys = <String>{};
@@ -71,6 +72,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   static const Duration _uploadRetryLimit = Duration(minutes: 30);
   static const Duration _studentReconnectDelay = Duration(seconds: 2);
   static const Duration _studentConnectTimeout = Duration(seconds: 12);
+  static const Duration _remoteVideoFirstFrameTimeout = Duration(seconds: 10);
   static const Duration _participantHeartbeatInterval = Duration(seconds: 30);
   static const Duration _classEndConfirmationDelay = Duration(seconds: 5);
   static const int _maxStudentReconnectAttempts = 3;
@@ -89,6 +91,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       <String, RTCVideoRenderer>{};
   final Map<String, Future<RTCVideoRenderer?>> _remoteRendererInitializations =
       <String, Future<RTCVideoRenderer?>>{};
+  final Set<String> _remotePeersWithFirstFrame = <String>{};
+  final Map<String, Timer> _remoteFirstFrameTimers = <String, Timer>{};
   final Map<String, _PeerSession> _peerSessions = <String, _PeerSession>{};
   final Set<String> _teacherPeerStartInProgress = <String>{};
   final Map<String, dynamic> _sdpConstraints = <String, dynamic>{
@@ -246,17 +250,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   Map<String, dynamic> get _rtcConfiguration => <String, dynamic>{
-    'iceServers': <Map<String, dynamic>>[
-      <String, dynamic>{
-        'urls': <String>[
-          'stun:stun.l.google.com:19302',
-          'stun:stun1.l.google.com:19302',
-          'stun:stun2.l.google.com:19302',
-          'stun:stun3.l.google.com:19302',
-          'stun:stun4.l.google.com:19302',
-        ],
-      },
-    ],
+    'iceServers': buildWebRtcIceServers(),
     'sdpSemantics': 'unified-plan',
     'iceTransportPolicy': 'all',
     'bundlePolicy': 'max-bundle',
@@ -707,10 +701,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
             );
           } catch (_) {
             _localStream = await navigator.mediaDevices.getUserMedia(
-              <String, dynamic>{
-                'audio': true,
-                'video': true,
-              },
+              <String, dynamic>{'audio': true, 'video': true},
             );
           }
         }
@@ -810,7 +801,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
     peerConnection.onTrack = (event) {
       if (event.streams.isNotEmpty) {
-        _attachRemoteStream(session, event.streams.first);
+        final track = event.track;
+        _attachRemoteStream(
+          session,
+          event.streams.first,
+          videoTrackId: track.kind == 'video' ? track.id : null,
+        );
       }
     };
 
@@ -1499,14 +1495,21 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       ..addAll(remainingCandidates);
   }
 
-  void _attachRemoteStream(_PeerSession session, MediaStream stream) {
-    unawaited(_attachRemoteStreamInternal(session, stream));
+  void _attachRemoteStream(
+    _PeerSession session,
+    MediaStream stream, {
+    String? videoTrackId,
+  }) {
+    unawaited(
+      _attachRemoteStreamInternal(session, stream, videoTrackId: videoTrackId),
+    );
   }
 
   Future<void> _attachRemoteStreamInternal(
     _PeerSession session,
-    MediaStream stream,
-  ) async {
+    MediaStream stream, {
+    String? videoTrackId,
+  }) async {
     final peerId = session.peerId;
     if (!_canAttachRemoteStream(session)) {
       return;
@@ -1518,12 +1521,34 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         return;
       }
 
+      final isNewStream = renderer.srcObject?.id != stream.id;
+      if (isNewStream) {
+        _remotePeersWithFirstFrame.remove(peerId);
+      }
+
       if (kIsWeb) {
         renderer.muted = !_isSpeakerOn;
         renderer.volume = _isSpeakerOn ? 1.0 : 0.0;
         renderer.srcObject = stream;
       } else {
-        renderer.srcObject = stream;
+        final videoTracks = stream.getVideoTracks();
+        final resolvedVideoTrackId =
+            videoTrackId ??
+            (videoTracks.isNotEmpty ? videoTracks.first.id : null);
+        if (resolvedVideoTrackId != null) {
+          // Binding the exact receiver track avoids an Android Unified Plan
+          // race where the MediaStream wrapper exists before its video track
+          // is visible to the texture renderer.
+          await renderer.setSrcObject(
+            stream: stream,
+            trackId: resolvedVideoTrackId,
+          );
+          _scheduleRemoteFirstFrameTimeout(session, renderer);
+        } else {
+          // Audio can arrive before video. Keep it attached for playback, but
+          // do not declare the teacher video healthy until a frame is decoded.
+          renderer.srcObject = stream;
+        }
         for (final audioTrack in stream.getAudioTracks()) {
           audioTrack.enabled = true;
           try {
@@ -1551,9 +1576,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
       setState(() {
         _focusedRemotePeerId ??= peerId;
-        _isRemoteConnected = true;
+        _isRemoteConnected = _connectedRemoteCount > 0;
         _errorMessage = null;
-        _statusMessage = _connectedStatusMessage();
+        _statusMessage = _isRemoteConnected
+            ? _connectedStatusMessage()
+            : 'Connected. Waiting for video...';
       });
     } catch (error, stackTrace) {
       if (!_isCleaningUp && !_hasEndedCall) {
@@ -1568,6 +1595,73 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         !_isCleaningUp &&
         !session.isClosing &&
         identical(_peerSessions[session.peerId], session);
+  }
+
+  void _scheduleRemoteFirstFrameTimeout(
+    _PeerSession session,
+    RTCVideoRenderer renderer,
+  ) {
+    final peerId = session.peerId;
+    if (_remotePeersWithFirstFrame.contains(peerId)) {
+      return;
+    }
+
+    _remoteFirstFrameTimers.remove(peerId)?.cancel();
+    _remoteFirstFrameTimers[peerId] = Timer(_remoteVideoFirstFrameTimeout, () {
+      _remoteFirstFrameTimers.remove(peerId);
+      if (!_canAttachRemoteStream(session) ||
+          !identical(_remoteRenderers[peerId], renderer) ||
+          _remotePeersWithFirstFrame.contains(peerId)) {
+        return;
+      }
+
+      // A stream object without a decoded frame is the black-screen state.
+      // Detaching it restores the placeholder and allows student recovery.
+      renderer.srcObject = null;
+      if (mounted) {
+        setState(() {
+          _isRemoteConnected = _connectedRemoteCount > 0;
+          _statusMessage = widget.isTeacher
+              ? 'Student video did not arrive.'
+              : 'Teacher video did not arrive. Reconnecting...';
+          if (!widget.isTeacher && peerId == _localParticipantId) {
+            _showStudentReconnectAction = true;
+          }
+        });
+      }
+      if (!widget.isTeacher && peerId == _localParticipantId) {
+        _scheduleStudentReconnect();
+      }
+    });
+  }
+
+  void _handleRemoteFirstFrame(String peerId, RTCVideoRenderer renderer) {
+    final session = _peerSessions[peerId];
+    if (session == null ||
+        !_canAttachRemoteStream(session) ||
+        !identical(_remoteRenderers[peerId], renderer)) {
+      return;
+    }
+
+    _remoteFirstFrameTimers.remove(peerId)?.cancel();
+    if (!_remotePeersWithFirstFrame.add(peerId) || !mounted) {
+      return;
+    }
+
+    if (!widget.isTeacher && peerId == _localParticipantId) {
+      _studentReconnectTimer?.cancel();
+      _studentReconnectTimer = null;
+      _studentReconnectAttempts = 0;
+      _studentReconnectInProgress = false;
+      _showStudentReconnectAction = false;
+    }
+
+    setState(() {
+      _focusedRemotePeerId ??= peerId;
+      _isRemoteConnected = _connectedRemoteCount > 0;
+      _errorMessage = null;
+      _statusMessage = _connectedStatusMessage();
+    });
   }
 
   Future<RTCVideoRenderer?> _getOrCreateRemoteRenderer(String peerId) {
@@ -1598,6 +1692,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         }
 
         _remoteRenderers[peerId] = renderer;
+        renderer.onFirstFrameRendered = () =>
+            _handleRemoteFirstFrame(peerId, renderer);
         return renderer;
       } catch (_) {
         try {
@@ -2075,14 +2171,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       return;
     }
 
-    if (!widget.isTeacher && peerId == _localParticipantId) {
-      _studentReconnectTimer?.cancel();
-      _studentReconnectTimer = null;
-      _studentReconnectAttempts = 0;
-      _studentReconnectInProgress = false;
-      _showStudentReconnectAction = false;
-    }
-
     setState(() {
       _focusedRemotePeerId ??= peerId;
       final connectedCount = _connectedRemoteCount;
@@ -2095,6 +2183,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   void _handleRemoteDisconnect(String peerId, String message) {
+    _remoteFirstFrameTimers.remove(peerId)?.cancel();
+    _remotePeersWithFirstFrame.remove(peerId);
     final renderer = _remoteRenderers[peerId];
     renderer?.srcObject = null;
 
@@ -2766,6 +2856,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     }
 
     final renderer = _remoteRenderers.remove(peerId);
+    _remoteFirstFrameTimers.remove(peerId)?.cancel();
+    _remotePeersWithFirstFrame.remove(peerId);
     if (renderer != null) {
       try {
         renderer.srcObject = null;
@@ -2806,6 +2898,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       _participantHeartbeatTimer = null;
       _classEndConfirmationTimer?.cancel();
       _classEndConfirmationTimer = null;
+      for (final timer in _remoteFirstFrameTimers.values) {
+        timer.cancel();
+      }
+      _remoteFirstFrameTimers.clear();
+      _remotePeersWithFirstFrame.clear();
       // 1. Cancel all Firebase listeners first
       await _participantsSub?.cancel();
       _participantsSub = null;
@@ -2911,19 +3008,28 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   int get _connectedRemoteCount {
-    return _remoteRenderers.values
-        .where((renderer) => renderer.srcObject != null)
+    return _remoteRenderers.entries
+        .where(
+          (entry) =>
+              entry.value.srcObject != null &&
+              _remotePeersWithFirstFrame.contains(entry.key),
+        )
         .length;
   }
 
   bool get _isStudentTeacherConnected {
     if (widget.isTeacher) return true;
-    return _remoteRenderers[_localParticipantId]?.srcObject != null;
+    return _remoteRenderers[_localParticipantId]?.srcObject != null &&
+        _remotePeersWithFirstFrame.contains(_localParticipantId);
   }
 
   List<MapEntry<String, RTCVideoRenderer>> get _connectedRemoteRenderers {
     return _remoteRenderers.entries
-        .where((entry) => entry.value.srcObject != null)
+        .where(
+          (entry) =>
+              entry.value.srcObject != null &&
+              _remotePeersWithFirstFrame.contains(entry.key),
+        )
         .toList();
   }
 
@@ -3534,7 +3640,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     // students never push the teacher into a grid or the small self-view.
     if (!widget.isTeacher) {
       final teacherRenderer = _remoteRenderers[_localParticipantId];
-      if (teacherRenderer?.srcObject != null) {
+      if (teacherRenderer?.srcObject != null &&
+          _remotePeersWithFirstFrame.contains(_localParticipantId)) {
         return ColoredBox(
           color: Colors.black,
           child: RTCVideoView(

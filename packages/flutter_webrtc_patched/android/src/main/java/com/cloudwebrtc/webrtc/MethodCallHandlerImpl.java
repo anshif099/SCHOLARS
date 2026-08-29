@@ -620,7 +620,12 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
           stream = getStreamForId(streamId, ownerTag);
         }
         if (trackId != null && !trackId.equals("0")){
-          render.setStream(stream, trackId, ownerTag);
+          MediaStreamTrack track = getTrackForId(trackId, ownerTag);
+          if (track instanceof VideoTrack) {
+            render.setTrack((VideoTrack) track, streamId, ownerTag);
+          } else {
+            render.setStream(stream, trackId, ownerTag);
+          }
         } else {
           render.setStream(stream, ownerTag);
         }
