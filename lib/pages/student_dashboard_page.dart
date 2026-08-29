@@ -20,6 +20,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'note_image_viewer_page.dart';
 import '../services/firebase_upload_auth_service.dart';
 import '../services/live_class_lifecycle_policy.dart';
+import '../services/recording_playback_policy.dart';
 import '../components/fresh_stream_builder.dart';
 import '../components/universal_image.dart';
 import '../components/camera_mic_access_dialog.dart';
@@ -41,18 +42,6 @@ bool _isRecordingUploadPending(Map recording) {
   final age = DateTime.now().millisecondsSinceEpoch - timestamp;
   return age >= -const Duration(minutes: 5).inMilliseconds &&
       age <= const Duration(minutes: 45).inMilliseconds;
-}
-
-bool _isRecordingCompatibilityPending(Map recording) {
-  final status = recording['compatibility_status']?.toString();
-  return status == 'waiting' || status == 'converting';
-}
-
-bool _needsIOSRecordingConversion(Map recording) {
-  if (!kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return false;
-  final mime = recording['mime_type']?.toString().toLowerCase() ?? '';
-  final url = recording['video_url']?.toString().toLowerCase() ?? '';
-  return mime.contains('webm') || url.contains('.webm');
 }
 
 class StudentDashboardPage extends StatefulWidget {
@@ -1299,7 +1288,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   }
 
   bool _hasPlayableRecording(Map<String, dynamic> recording) {
-    if (_isRecordingCompatibilityPending(recording)) return false;
+    if (isIOSRecordingPreparationPending(recording)) return false;
     final hasUrl =
         recording['video_url'] != null &&
         recording['video_url'].toString().isNotEmpty;
@@ -1310,7 +1299,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   }
 
   String? _recordingStatusLabel(Map<String, dynamic> recording) {
-    if (_isRecordingCompatibilityPending(recording)) {
+    if (isIOSRecordingPreparationPending(recording)) {
       return 'Preparing for iPhone';
     }
     if (_hasPlayableRecording(recording)) return null;
@@ -1333,7 +1322,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   }
 
   String _recordingUnavailableMessage(Map<String, dynamic> recording) {
-    if (_isRecordingCompatibilityPending(recording)) {
+    if (isIOSRecordingPreparationPending(recording)) {
       return 'This recording is being converted for iPhone. Try again shortly.';
     }
     if (_isRecordingUploadPending(recording)) {
@@ -1666,7 +1655,7 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
   }
 
   bool _hasPlayableRecording(Map<dynamic, dynamic> recording) {
-    if (_isRecordingCompatibilityPending(recording)) return false;
+    if (isIOSRecordingPreparationPending(recording)) return false;
     final hasUrl =
         recording['video_url'] != null &&
         recording['video_url'].toString().isNotEmpty;
@@ -1677,7 +1666,7 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
   }
 
   String? _recordingStatusLabel(Map<dynamic, dynamic> recording) {
-    if (_isRecordingCompatibilityPending(recording)) {
+    if (isIOSRecordingPreparationPending(recording)) {
       return 'Preparing for iPhone';
     }
     if (_hasPlayableRecording(recording)) return null;
@@ -1700,7 +1689,7 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
   }
 
   String _recordingUnavailableMessage(Map<dynamic, dynamic> recording) {
-    if (_isRecordingCompatibilityPending(recording)) {
+    if (isIOSRecordingPreparationPending(recording)) {
       return 'This recording is being converted for iPhone. Try again shortly.';
     }
     if (_isRecordingUploadPending(recording)) {
@@ -2646,7 +2635,7 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                                           ),
                                         ),
                                         onPressed: () async {
-                                          if (_needsIOSRecordingConversion(
+                                          if (needsIOSRecordingConversion(
                                             rc,
                                           )) {
                                             await FirebaseDatabase.instance

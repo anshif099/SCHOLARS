@@ -81,6 +81,31 @@ async function makeRecordedClassCompatible(
 
   const classId = match[1];
   const sourceExtension = match[3].toLowerCase();
+  const needsNormalization =
+    sourceExtension === "webm" ||
+    String(sourceMetadata.normalize_recording || "").toLowerCase() === "true";
+
+  // Native recorders already produce a regular H.264/AAC MP4. Re-encoding
+  // those files delayed playback for several minutes and made a playable
+  // recording appear as "Preparing for iPhone". Browser MP4 files explicitly
+  // opt in below because they may still need their fragmented container
+  // normalized for reliable seeking on Android.
+  if (!needsNormalization) {
+    const recordedClassRef =
+      initialRecordedClassRef || (await findRecordedClass(classId, sourcePath));
+    await recordedClassRef?.update({
+      compatibility_status: "ready",
+      compatibility_error: null,
+      compatibility_updated_at: admin.database.ServerValue.TIMESTAMP,
+    });
+    logger.info("Skipped unnecessary recorded class conversion.", {
+      classId,
+      sourcePath,
+      sourceExtension,
+    });
+    return;
+  }
+
   const destinationPath = sourceExtension === "webm"
     ? sourcePath.replace(/\.webm$/i, ".mp4")
     : sourcePath.replace(/\.mp4$/i, "_compatible.mp4");
@@ -89,15 +114,26 @@ async function makeRecordedClassCompatible(
   const outputPath = path.join(os.tmpdir(), `${workId}_compatible.mp4`);
   const bucket = admin.storage().bucket(bucketName);
   const sourceContentType = String(object.contentType || "").toLowerCase();
+  const recordedMimeType = String(
+    sourceMetadata.recorded_mime_type || ""
+  ).toLowerCase();
   const canCopyH264Video =
-    sourceContentType.includes("h264") || sourceContentType.includes("avc1");
+    sourceContentType.includes("h264") ||
+    sourceContentType.includes("avc1") ||
+    recordedMimeType.includes("h264") ||
+    recordedMimeType.includes("avc1");
+  const requiresIOSConversion = sourceExtension === "webm";
   let recordedClassRef =
     initialRecordedClassRef || (await findRecordedClass(classId, sourcePath));
 
   try {
     await recordedClassRef?.update({
-      compatibility_status: "converting",
+      // MP4 is directly playable while its container is normalized in the
+      // background. Only WebM must block iPhone playback until conversion.
+      compatibility_status: requiresIOSConversion ? "converting" : "ready",
       compatibility_updated_at: admin.database.ServerValue.TIMESTAMP,
+      normalization_status: "converting",
+      normalization_updated_at: admin.database.ServerValue.TIMESTAMP,
     });
 
     await bucket.file(sourcePath).download({destination: inputPath});
@@ -189,6 +225,9 @@ async function makeRecordedClassCompatible(
       compatibility_error: null,
       compatibility_source_path: sourcePath,
       compatibility_updated_at: admin.database.ServerValue.TIMESTAMP,
+      normalization_status: "ready",
+      normalization_error: null,
+      normalization_updated_at: admin.database.ServerValue.TIMESTAMP,
     });
 
     logger.info("Made recorded class video seekable and compatible.", {
@@ -204,12 +243,18 @@ async function makeRecordedClassCompatible(
       sourcePath,
       error,
     });
+    const errorMessage = String(
+      error && error.message ? error.message : error
+    );
     await recordedClassRef?.update({
-      compatibility_status: "failed",
-      compatibility_error: String(
-        error && error.message ? error.message : error
-      ),
+      // A source MP4 remains directly playable if optional normalization
+      // fails. WebM still requires a successful conversion on iPhone.
+      compatibility_status: requiresIOSConversion ? "failed" : "ready",
+      compatibility_error: requiresIOSConversion ? errorMessage : null,
       compatibility_updated_at: admin.database.ServerValue.TIMESTAMP,
+      normalization_status: "failed",
+      normalization_error: errorMessage,
+      normalization_updated_at: admin.database.ServerValue.TIMESTAMP,
     });
     throw error;
   } finally {

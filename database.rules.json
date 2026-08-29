@@ -25,7 +25,7 @@
     "recorded_classes": {
       ".write": true,
       "$classId": {
-        ".indexOn": ["date"]
+        ".indexOn": ["date", "storage_path"]
       }
     }
   }

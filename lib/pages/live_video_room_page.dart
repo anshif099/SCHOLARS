@@ -2529,6 +2529,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
       final recordedMime = _webRecordingHelper.recordedMimeType;
       final fileExtension = recordedMime.contains('mp4') ? 'mp4' : 'webm';
+      final requiresIOSConversion = fileExtension == 'webm';
 
       fileSizeBytes = _webRecordingHelper.recordedSizeBytes;
       storagePath =
@@ -2543,6 +2544,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         'max_frame_rate': '$_recordingMaxFrameRate',
         'live_bandwidth_kbps': '${_callVideoMaxBitrate ~/ 1000}',
         'target_kb_per_minute': '$_recordingTargetKbPerMinute',
+        'recording_platform': 'web',
+        'normalize_recording': 'true',
+        'recorded_mime_type': recordedMime,
       };
       customMetadata['uploaded_by_uid'] = authUid;
 
@@ -2551,9 +2555,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         'storage_path': storagePath,
         'file_size_bytes': fileSizeBytes,
         'mime_type': recordedMime,
-        // Browser MP4 can be fragmented and report 00:00 duration on Android,
-        // so every web recording is normalized to a seekable fast-start MP4.
-        'compatibility_status': 'waiting',
+        // An MP4 can play immediately on iPhone while its container is
+        // normalized in the background for reliable Android seeking. WebM is
+        // the only format that must wait for the compatible MP4.
+        'compatibility_status': requiresIOSConversion ? 'waiting' : 'ready',
+        'normalization_status': 'waiting',
         'upload_progress': 0,
         'upload_updated_at': DateTime.now().millisecondsSinceEpoch,
       });
@@ -2638,6 +2644,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
               'max_frame_rate': '$_recordingMaxFrameRate',
               'live_bandwidth_kbps': '${_callVideoMaxBitrate ~/ 1000}',
               'target_kb_per_minute': '$_recordingTargetKbPerMinute',
+              'recording_platform': 'native',
+              'normalize_recording': 'false',
             };
             customMetadata['uploaded_by_uid'] = authUid;
 
@@ -2647,6 +2655,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
               'file_size_bytes': fileSizeBytes,
               'upload_progress': 0,
               'upload_updated_at': DateTime.now().millisecondsSinceEpoch,
+              'compatibility_status': 'ready',
             });
 
             final metadata = SettableMetadata(
