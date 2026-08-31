@@ -103,27 +103,10 @@ public class SurfaceTextureRenderer extends EglRenderer {
         producer.setSize(frame.getRotatedWidth(),frame.getRotatedHeight());
         surface = producer.getSurface();
         createEglSurface(surface);
-      } else if (frameSizeChanged(frame)) {
-        // SurfaceProducer backing buffers are fixed-size. Recreate the EGL
-        // surface after a camera rotation or resolution change so Android does
-        // not continue drawing into an invalid/stale buffer.
-        releaseEglSurface(() -> {});
-        surface = null;
-        producer.setSize(frame.getRotatedWidth(), frame.getRotatedHeight());
-        surface = producer.getSurface();
-        createEglSurface(surface);
       }
     }
     updateFrameDimensionsAndReportEvents(frame);
     super.onFrame(frame);
-  }
-
-  private boolean frameSizeChanged(VideoFrame frame) {
-    synchronized (layoutLock) {
-      return !isRenderingPaused
-          && (rotatedFrameWidth != frame.getRotatedWidth()
-              || rotatedFrameHeight != frame.getRotatedHeight());
-    }
   }
 
   private final Object surfaceLock = new Object();
@@ -180,6 +163,11 @@ public class SurfaceTextureRenderer extends EglRenderer {
         }
         rotatedFrameWidth = frame.getRotatedWidth();
         rotatedFrameHeight = frame.getRotatedHeight();
+        // Resize the existing SurfaceProducer in place. Releasing and
+        // recreating the EGL surface from the WebRTC frame thread races the
+        // asynchronous EGL teardown and can leave MediaTek/Mali devices with
+        // a black external texture.
+        producer.setSize(rotatedFrameWidth, rotatedFrameHeight);
         frameRotation = frame.getRotation();
       }
     }
