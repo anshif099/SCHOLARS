@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:chewie/chewie.dart';
 import 'package:firebase_storage/firebase_storage.dart';
@@ -14,6 +15,7 @@ import 'package:video_player/video_player.dart';
 import '../services/video_web_helper.dart';
 import '../theme/app_theme.dart';
 import '../components/universal_image.dart';
+import '../components/drawing_overlay.dart';
 import '../components/web_pdf_page_view.dart';
 import '../services/web_pdf_renderer.dart';
 import 'webm_video_player_page.dart';
@@ -50,25 +52,139 @@ class VideoPlayerPage extends StatefulWidget {
         ? raw.values
         : const <dynamic>[];
     final events = <Map<String, dynamic>>[];
+    var fallbackSequence = 0;
 
     for (final value in values) {
       if (value is! Map) continue;
       final event = Map<String, dynamic>.from(value);
-      event['offset_ms'] = (event['offset_ms'] as num? ?? 0).toInt();
-      event['page'] = (event['page'] as num? ?? 1).toInt();
+      event['offset_ms'] = max(0, (event['offset_ms'] as num? ?? 0).toInt());
+      event['sequence'] =
+          (event['sequence'] as num?)?.toInt() ?? fallbackSequence;
+      fallbackSequence++;
+      event['page'] = max(1, (event['page'] as num? ?? 1).toInt());
       final action = event['action']?.toString();
-      if (action == 'hide' ||
-          (action == 'show' &&
-              event['url'] != null &&
-              event['url'].toString().isNotEmpty)) {
+      event['action'] = action;
+
+      if (action == 'show') {
+        final url = event['url']?.toString() ?? '';
+        if (url.isEmpty) continue;
+        event['url'] = url;
+        event['zoom'] = _boundedDouble(event['zoom'], 1.0, 5.0, 1.0);
+        event['pan_x'] = _boundedDouble(event['pan_x'], -5.0, 5.0, 0.0);
+        event['pan_y'] = _boundedDouble(event['pan_y'], -5.0, 5.0, 0.0);
+        event['strokes'] = _normalizeStrokes(event['strokes']);
+        events.add(event);
+      } else if (action == 'hide' || action == 'clear') {
+        events.add(event);
+      } else if (action == 'stroke') {
+        final stroke = _normalizeStroke(event['stroke']);
+        if (stroke == null) continue;
+        event['stroke'] = stroke;
+        events.add(event);
+      } else if (action == 'view') {
+        event['zoom'] = _boundedDouble(event['zoom'], 1.0, 5.0, 1.0);
+        event['pan_x'] = _boundedDouble(event['pan_x'], -5.0, 5.0, 0.0);
+        event['pan_y'] = _boundedDouble(event['pan_y'], -5.0, 5.0, 0.0);
         events.add(event);
       }
     }
 
-    events.sort(
-      (a, b) => (a['offset_ms'] as int).compareTo(b['offset_ms'] as int),
-    );
+    events.sort((a, b) {
+      final offsetComparison = (a['offset_ms'] as int).compareTo(
+        b['offset_ms'] as int,
+      );
+      if (offsetComparison != 0) return offsetComparison;
+      return (a['sequence'] as int).compareTo(b['sequence'] as int);
+    });
     return events;
+  }
+
+  static double _boundedDouble(
+    dynamic raw,
+    double minimum,
+    double maximum,
+    double fallback,
+  ) {
+    if (raw is! num || !raw.toDouble().isFinite) return fallback;
+    return raw.toDouble().clamp(minimum, maximum);
+  }
+
+  static Map<String, dynamic>? _normalizeStroke(dynamic raw) {
+    if (raw is! Map) return null;
+    final stroke = DrawingStroke.fromJson(raw);
+    return stroke.points.isEmpty ? null : stroke.toJson();
+  }
+
+  static List<Map<String, dynamic>> _normalizeStrokes(dynamic raw) {
+    final values = raw is List
+        ? raw
+        : raw is Map
+        ? raw.values
+        : const <dynamic>[];
+    return values
+        .map(_normalizeStroke)
+        .whereType<Map<String, dynamic>>()
+        .toList(growable: false);
+  }
+
+  /// Rebuilds the shared-document state at [positionMs]. Incremental drawing,
+  /// clearing, and view events keep recordings compact while remaining fully
+  /// seekable.
+  static Map<String, dynamic>? resolvePresentationAt(
+    List<Map<String, dynamic>> events,
+    int positionMs,
+  ) {
+    Map<String, dynamic>? state;
+
+    for (final event in events) {
+      final offset = (event['offset_ms'] as num?)?.toInt() ?? 0;
+      if (offset > positionMs) break;
+
+      switch (event['action']?.toString()) {
+        case 'show':
+          state = Map<String, dynamic>.from(event);
+          state['strokes'] = _normalizeStrokes(event['strokes']);
+          break;
+        case 'hide':
+          state = null;
+          break;
+        case 'stroke':
+          if (!_eventMatchesPresentation(event, state)) break;
+          final stroke = _normalizeStroke(event['stroke']);
+          if (stroke == null) break;
+          final strokes = _normalizeStrokes(state!['strokes']);
+          state['strokes'] = <Map<String, dynamic>>[...strokes, stroke];
+          break;
+        case 'clear':
+          if (!_eventMatchesPresentation(event, state)) break;
+          state!['strokes'] = <Map<String, dynamic>>[];
+          break;
+        case 'view':
+          if (!_eventMatchesPresentation(event, state)) break;
+          state!['zoom'] = _boundedDouble(event['zoom'], 1.0, 5.0, 1.0);
+          state['pan_x'] = _boundedDouble(event['pan_x'], -5.0, 5.0, 0.0);
+          state['pan_y'] = _boundedDouble(event['pan_y'], -5.0, 5.0, 0.0);
+          break;
+      }
+    }
+
+    return state;
+  }
+
+  static bool _eventMatchesPresentation(
+    Map<String, dynamic> event,
+    Map<String, dynamic>? state,
+  ) {
+    if (state == null) return false;
+    final eventUrl = event['url']?.toString();
+    if (eventUrl != null &&
+        eventUrl.isNotEmpty &&
+        eventUrl != state['url']?.toString()) {
+      return false;
+    }
+    final eventPage = (event['page'] as num?)?.toInt();
+    final statePage = (state['page'] as num?)?.toInt();
+    return eventPage == null || statePage == null || eventPage == statePage;
   }
 
   @override
@@ -103,12 +219,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   @override
   void initState() {
     super.initState();
-    _presentationEvents =
-        List<Map<String, dynamic>>.from(widget.presentationEvents)..sort(
-          (a, b) => ((a['offset_ms'] as num?)?.toInt() ?? 0).compareTo(
-            (b['offset_ms'] as num?)?.toInt() ?? 0,
-          ),
-        );
+    _presentationEvents = VideoPlayerPage.parsePresentationEvents(
+      widget.presentationEvents,
+    );
     _initializePlayer();
   }
 
@@ -399,8 +512,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     }
 
     if (eventIndex == _activePresentationIndex) return;
-    final event = eventIndex >= 0 ? _presentationEvents[eventIndex] : null;
-    final activeEvent = event?['action'] == 'show' ? event : null;
+    final activeEvent = VideoPlayerPage.resolvePresentationAt(
+      _presentationEvents,
+      positionMs,
+    );
 
     setState(() {
       _activePresentationIndex = eventIndex;
@@ -614,14 +729,17 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
           Positioned.fill(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 48, 12, 12),
-              child: type == 'pdf'
-                  ? _buildRecordedPdf(url, page)
-                  : UniversalImage(
-                      imageUrl: url,
-                      fit: BoxFit.contain,
-                      errorBuilder: (context, error, stackTrace) =>
-                          _buildPresentationError('Shared image unavailable'),
-                    ),
+              child: _buildRecordedPresentationViewport(
+                event,
+                type == 'pdf'
+                    ? _buildRecordedPdf(url, page)
+                    : UniversalImage(
+                        imageUrl: url,
+                        fit: BoxFit.contain,
+                        errorBuilder: (context, error, stackTrace) =>
+                            _buildPresentationError('Shared image unavailable'),
+                      ),
+              ),
             ),
           ),
           Positioned(
@@ -661,6 +779,43 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildRecordedPresentationViewport(
+    Map<String, dynamic> event,
+    Widget document,
+  ) {
+    final zoom = (event['zoom'] as num?)?.toDouble().clamp(1.0, 5.0) ?? 1.0;
+    final panX = (event['pan_x'] as num?)?.toDouble().clamp(-5.0, 5.0) ?? 0.0;
+    final panY = (event['pan_y'] as num?)?.toDouble().clamp(-5.0, 5.0) ?? 0.0;
+    final strokes = drawingStrokesFromJson(event['strokes']);
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final size = constraints.biggest;
+        final transform = Matrix4.diagonal3Values(zoom, zoom, 1.0)
+          ..setTranslationRaw(panX * size.width, panY * size.height, 0.0);
+
+        return ClipRect(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Transform(
+                alignment: Alignment.topLeft,
+                transform: transform,
+                child: SizedBox.fromSize(size: size, child: document),
+              ),
+              IgnorePointer(
+                child: CustomPaint(
+                  painter: DrawingPainter(completedStrokes: strokes),
+                  size: Size.infinite,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 

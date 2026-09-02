@@ -23,6 +23,7 @@ import '../services/live_class_lifecycle_policy.dart';
 import '../services/permission_service.dart';
 import '../theme/app_theme.dart';
 import '../components/web_pdf_page_view.dart';
+import '../components/drawing_overlay.dart';
 import '../services/web_pdf_renderer.dart';
 import '../services/webrtc_ice_server_config.dart';
 
@@ -184,6 +185,13 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   final TransformationController _documentTransformationController =
       TransformationController();
   double _documentZoom = 1.0;
+  double _documentPanX = 0.0;
+  double _documentPanY = 0.0;
+  Timer? _documentViewSyncTimer;
+  Map<String, dynamic>? _pendingDocumentViewSync;
+  Future<void> _documentViewSyncTask = Future<void>.value();
+  bool _documentViewSyncInProgress = false;
+  int _documentViewSyncGeneration = 0;
   bool _isDocumentFullScreen = false;
   Future<void> _pdfPageSyncTask = Future<void>.value();
   bool _isDrawingMode = false;
@@ -2581,7 +2589,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         'has_shared_content': presentationEvents.isNotEmpty,
         if (presentationEvents.isNotEmpty) ...<String, dynamic>{
           'presentation_events': presentationEvents,
-          'presentation_version': 1,
+          'presentation_version': 2,
         },
         'upload_status': 'preparing',
       });
@@ -2898,6 +2906,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       _participantHeartbeatTimer = null;
       _classEndConfirmationTimer?.cancel();
       _classEndConfirmationTimer = null;
+      await _cancelDocumentViewSync();
       for (final timer in _remoteFirstFrameTimers.values) {
         timer.cancel();
       }
@@ -3196,6 +3205,19 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     return int.tryParse(value?.toString() ?? '');
   }
 
+  double _parseBoundedDouble(
+    dynamic value,
+    double minimum,
+    double maximum,
+    double fallback,
+  ) {
+    final parsed = value is num
+        ? value.toDouble()
+        : double.tryParse(value?.toString() ?? '');
+    if (parsed == null || !parsed.isFinite) return fallback;
+    return parsed.clamp(minimum, maximum);
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -3207,6 +3229,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     _participantHeartbeatTimer = null;
     _classEndConfirmationTimer?.cancel();
     _classEndConfirmationTimer = null;
+    _documentViewSyncTimer?.cancel();
+    _documentViewSyncTimer = null;
+    _pendingDocumentViewSync = null;
+    _documentViewSyncGeneration++;
     unawaited(_disableScreenAwake());
     _firebaseConnectionSub?.cancel();
     _drawingStrokesSub?.cancel();
@@ -3680,6 +3706,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         final newPageCount = _parseInt(doc['page_count']) ?? 0;
         final maxPage = newPageCount > 0 ? newPageCount : rawPage;
         final newPage = rawPage.clamp(1, maxPage).toInt();
+        final newZoom = _parseBoundedDouble(doc['zoom'], 1.0, 5.0, 1.0);
+        final newPanX = _parseBoundedDouble(doc['pan_x'], -5.0, 5.0, 0.0);
+        final newPanY = _parseBoundedDouble(doc['pan_y'], -5.0, 5.0, 0.0);
         final documentChanged =
             newUrl != _sharedDocUrl || newType != _sharedDocType;
 
@@ -3693,8 +3722,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
             _sharedDocType = newType;
             _sharedDocPage = newPage;
             _sharedDocPageCount = newPageCount;
-            _documentZoom = 1.0;
-            _isDocumentFullScreen = !widget.isTeacher && newUrl != null;
+            _documentZoom = newZoom;
+            _documentPanX = newPanX;
+            _documentPanY = newPanY;
+            // Students start with the participant strip visible so they can
+            // see the teacher and the shared item at the same time.
+            _isDocumentFullScreen = false;
             _pdfReloadNonce = 0;
             _sharedPdfDocumentRef = null;
             _sharedPdfBytes = null;
@@ -3709,9 +3742,16 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
             } else if (newType == 'pdf') {
               unawaited(_prepareSharedPdfDocument(newUrl));
             }
+            if (!widget.isTeacher) {
+              _applySynchronizedDocumentView(newZoom, newPanX, newPanY);
+            }
           }
         } else {
           final pageChanged = newPage != _sharedDocPage;
+          final viewChanged =
+              (newZoom - _documentZoom).abs() > 0.001 ||
+              (newPanX - _documentPanX).abs() > 0.0001 ||
+              (newPanY - _documentPanY).abs() > 0.0001;
           if (pageChanged) {
             _documentTransformationController.value = Matrix4.identity();
           }
@@ -3721,10 +3761,13 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
             if (newPageCount > 0) {
               _sharedDocPageCount = newPageCount;
             }
-            if (pageChanged) {
-              _documentZoom = 1.0;
-            }
+            _documentZoom = newZoom;
+            _documentPanX = newPanX;
+            _documentPanY = newPanY;
           });
+          if (!widget.isTeacher && (pageChanged || viewChanged)) {
+            _applySynchronizedDocumentView(newZoom, newPanX, newPanY);
+          }
         }
         _recordPresentationEvent();
       } else {
@@ -3743,6 +3786,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
           _sharedImageBytes = null;
           _sharedImageLoadError = null;
           _documentZoom = 1.0;
+          _documentPanX = 0.0;
+          _documentPanY = 0.0;
           _isDocumentFullScreen = false;
           _localSharedFile = null;
         });
@@ -3814,6 +3859,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         0,
         DateTime.now().difference(recordingStart).inMilliseconds,
       ),
+      'sequence': _recordingPresentationEvents.length,
       'action': action,
     };
     if (hasDocument) {
@@ -3822,11 +3868,173 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         'file_name': _sharedDocName ?? 'Shared note',
         'file_type': _sharedDocType ?? 'image',
         'page': _sharedDocPage,
+        'strokes': _completedStrokes
+            .map((stroke) => stroke.toJson())
+            .toList(growable: false),
+        ..._documentViewPayload(),
       });
     }
 
     _recordingPresentationEvents.add(event);
     _lastRecordedPresentationState = stateKey;
+  }
+
+  Map<String, dynamic> _documentViewPayload() {
+    final matrix = _documentTransformationController.value;
+    final canvasBox = _canvasKey.currentContext?.findRenderObject();
+    final canvasSize = canvasBox is RenderBox ? canvasBox.size : Size.zero;
+    final translationX = matrix.storage[12];
+    final translationY = matrix.storage[13];
+
+    return <String, dynamic>{
+      'zoom': matrix.getMaxScaleOnAxis().clamp(1.0, 5.0).toDouble(),
+      'pan_x': canvasSize.width > 0 ? translationX / canvasSize.width : 0.0,
+      'pan_y': canvasSize.height > 0 ? translationY / canvasSize.height : 0.0,
+    };
+  }
+
+  void _applySynchronizedDocumentView(double zoom, double panX, double panY) {
+    if (widget.isTeacher) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || widget.isTeacher || _sharedDocUrl == null) return;
+      final canvasBox = _canvasKey.currentContext?.findRenderObject();
+      if (canvasBox is! RenderBox || canvasBox.size.isEmpty) return;
+
+      _documentTransformationController.value =
+          Matrix4.diagonal3Values(zoom, zoom, 1.0)..setTranslationRaw(
+            panX * canvasBox.size.width,
+            panY * canvasBox.size.height,
+            0.0,
+          );
+    });
+  }
+
+  void _updateDocumentViewStateFromController() {
+    final payload = _documentViewPayload();
+    final zoom = payload['zoom'] as double;
+    final panX = payload['pan_x'] as double;
+    final panY = payload['pan_y'] as double;
+    if (mounted &&
+        ((zoom - _documentZoom).abs() > 0.001 ||
+            (panX - _documentPanX).abs() > 0.0001 ||
+            (panY - _documentPanY).abs() > 0.0001)) {
+      setState(() {
+        _documentZoom = zoom;
+        _documentPanX = panX;
+        _documentPanY = panY;
+      });
+    } else {
+      _documentZoom = zoom;
+      _documentPanX = panX;
+      _documentPanY = panY;
+    }
+  }
+
+  void _scheduleDocumentViewSync({bool immediate = false}) {
+    if (!widget.isTeacher || _sharedDocUrl == null) return;
+    _pendingDocumentViewSync = _documentViewPayload();
+
+    if (immediate) {
+      _documentViewSyncTimer?.cancel();
+      _documentViewSyncTimer = null;
+      _enqueuePendingDocumentViewSync();
+      return;
+    }
+
+    _documentViewSyncTimer ??= Timer(const Duration(milliseconds: 80), () {
+      _documentViewSyncTimer = null;
+      _enqueuePendingDocumentViewSync();
+    });
+  }
+
+  void _enqueuePendingDocumentViewSync() {
+    final documentUrl = _sharedDocUrl;
+    if (_pendingDocumentViewSync == null ||
+        documentUrl == null ||
+        !widget.isTeacher ||
+        _documentViewSyncInProgress) {
+      return;
+    }
+    final generation = _documentViewSyncGeneration;
+    _documentViewSyncInProgress = true;
+    _documentViewSyncTask = _drainDocumentViewSync(documentUrl, generation);
+  }
+
+  Future<void> _drainDocumentViewSync(
+    String documentUrl,
+    int generation,
+  ) async {
+    try {
+      while (mounted &&
+          generation == _documentViewSyncGeneration &&
+          documentUrl == _sharedDocUrl) {
+        final payload = _pendingDocumentViewSync;
+        if (payload == null) break;
+        _pendingDocumentViewSync = null;
+        try {
+          await _webrtcRef.child('shared_document').update(payload);
+        } catch (error, stackTrace) {
+          _reportNonFatalError(
+            'synchronize shared document zoom',
+            error,
+            stackTrace,
+          );
+        }
+      }
+    } finally {
+      _documentViewSyncInProgress = false;
+      if (_pendingDocumentViewSync != null &&
+          generation == _documentViewSyncGeneration &&
+          documentUrl == _sharedDocUrl) {
+        _enqueuePendingDocumentViewSync();
+      }
+    }
+  }
+
+  Future<void> _cancelDocumentViewSync() async {
+    _documentViewSyncTimer?.cancel();
+    _documentViewSyncTimer = null;
+    _pendingDocumentViewSync = null;
+    _documentViewSyncGeneration++;
+    await _documentViewSyncTask;
+  }
+
+  bool get _canRecordPresentationAction =>
+      widget.isTeacher &&
+      _isRecording &&
+      _recordingStartTime != null &&
+      _sharedDocUrl != null;
+
+  void _recordPresentationAction(String action, Map<String, dynamic> payload) {
+    final recordingStart = _recordingStartTime;
+    if (!_canRecordPresentationAction || recordingStart == null) return;
+
+    _recordingPresentationEvents.add(<String, dynamic>{
+      'offset_ms': max(
+        0,
+        DateTime.now().difference(recordingStart).inMilliseconds,
+      ),
+      'sequence': _recordingPresentationEvents.length,
+      'action': action,
+      'url': _sharedDocUrl,
+      'page': _sharedDocPage,
+      ...payload,
+    });
+  }
+
+  void _recordCompletedStroke(DrawingStroke stroke) {
+    _recordPresentationAction('stroke', <String, dynamic>{
+      'stroke': stroke.toJson(),
+    });
+  }
+
+  void _recordDrawingClear() {
+    _recordPresentationAction('clear', const <String, dynamic>{});
+  }
+
+  void _recordDocumentView() {
+    _recordPresentationAction('view', _documentViewPayload());
   }
 
   PdfDocumentRef _createSharedPdfDataRef(Uint8List bytes, String url) {
@@ -3969,24 +4177,24 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   void _resetDocumentZoom() {
+    if (!widget.isTeacher) return;
     _documentTransformationController.value = Matrix4.identity();
-    if (mounted && _documentZoom != 1.0) {
-      setState(() => _documentZoom = 1.0);
-    } else {
-      _documentZoom = 1.0;
-    }
+    _updateDocumentViewStateFromController();
+    _scheduleDocumentViewSync(immediate: true);
+    _recordDocumentView();
   }
 
   void _setDocumentZoom(double zoom) {
+    if (!widget.isTeacher) return;
     final nextZoom = zoom.clamp(1.0, 5.0).toDouble();
     _documentTransformationController.value = Matrix4.diagonal3Values(
       nextZoom,
       nextZoom,
       1.0,
     );
-    if (mounted) {
-      setState(() => _documentZoom = nextZoom);
-    }
+    _updateDocumentViewStateFromController();
+    _scheduleDocumentViewSync(immediate: true);
+    _recordDocumentView();
   }
 
   void _toggleDocumentFullScreen() {
@@ -3996,6 +4204,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     setState(() {
       _isDocumentFullScreen = !_isDocumentFullScreen;
     });
+    _applySynchronizedDocumentView(_documentZoom, _documentPanX, _documentPanY);
   }
 
   void _changeSharedPdfPage(int requestedPage) {
@@ -4018,12 +4227,17 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     setState(() {
       _sharedDocPage = nextPage;
       _documentZoom = 1.0;
+      _documentPanX = 0.0;
+      _documentPanY = 0.0;
     });
 
     _pdfPageSyncTask = _pdfPageSyncTask.then(
       (_) => _webrtcRef.child('shared_document').update(<String, dynamic>{
         'current_page': nextPage,
         'page_count': pageCount,
+        'zoom': 1.0,
+        'pan_x': 0.0,
+        'pan_y': 0.0,
       }),
     );
   }
@@ -4100,6 +4314,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         _webrtcRef.child('drawing_strokes').push().set(finishedStroke.toJson()),
       );
       unawaited(_webrtcRef.child('current_stroke').remove());
+      _recordCompletedStroke(finishedStroke);
     }
   }
 
@@ -4108,6 +4323,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       _completedStrokes.clear();
       _currentStroke = null;
     });
+    _recordDrawingClear();
     await _webrtcRef.child('drawing_strokes').remove();
     await _webrtcRef.child('current_stroke').remove();
   }
@@ -4184,6 +4400,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
       final downloadUrl = await ref.getDownloadURL();
 
+      await _cancelDocumentViewSync();
       await _webrtcRef.child('drawing_strokes').remove();
       await _webrtcRef.child('current_stroke').remove();
 
@@ -4193,6 +4410,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         'file_type': fileType,
         'current_page': 1,
         'page_count': 0,
+        'zoom': 1.0,
+        'pan_x': 0.0,
+        'pan_y': 0.0,
       });
 
       setState(() {
@@ -4212,6 +4432,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       _localSharedFile = null;
     });
     try {
+      await _cancelDocumentViewSync();
       await _clearDrawings();
       await _webrtcRef.child('shared_document').remove();
       _recordPresentationEvent(hidden: true);
@@ -4510,16 +4731,20 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
           transformationController: _documentTransformationController,
           minScale: 1.0,
           maxScale: 5.0,
-          panEnabled: !_isDrawingMode,
-          scaleEnabled: !_isDrawingMode,
+          panEnabled: widget.isTeacher && !_isDrawingMode,
+          scaleEnabled: widget.isTeacher && !_isDrawingMode,
           clipBehavior: Clip.hardEdge,
+          onInteractionUpdate: widget.isTeacher
+              ? (details) {
+                  _updateDocumentViewStateFromController();
+                  _scheduleDocumentViewSync();
+                }
+              : null,
           onInteractionEnd: (details) {
-            final zoom = _documentTransformationController.value
-                .getMaxScaleOnAxis()
-                .clamp(1.0, 5.0)
-                .toDouble();
-            if (mounted && (zoom - _documentZoom).abs() > 0.01) {
-              setState(() => _documentZoom = zoom);
+            if (widget.isTeacher) {
+              _updateDocumentViewStateFromController();
+              _scheduleDocumentViewSync(immediate: true);
+              _recordDocumentView();
             }
           },
           child: SizedBox(
@@ -4562,29 +4787,38 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
                 ),
                 Container(width: 1, height: 24, color: Colors.white24),
               ],
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                tooltip: 'Zoom out',
-                onPressed: _documentZoom > 1.0
-                    ? () => _setDocumentZoom(_documentZoom - 0.5)
-                    : null,
-                icon: const Icon(Icons.zoom_out_rounded, color: Colors.white),
-              ),
-              TextButton(
-                onPressed: _resetDocumentZoom,
-                child: Text(
-                  '${(_documentZoom * 100).round()}%',
-                  style: const TextStyle(color: Colors.white),
+              if (widget.isTeacher) ...[
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Zoom out',
+                  onPressed: _documentZoom > 1.0
+                      ? () => _setDocumentZoom(_documentZoom - 0.5)
+                      : null,
+                  icon: const Icon(Icons.zoom_out_rounded, color: Colors.white),
                 ),
-              ),
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                tooltip: 'Zoom in',
-                onPressed: _documentZoom < 5.0
-                    ? () => _setDocumentZoom(_documentZoom + 0.5)
-                    : null,
-                icon: const Icon(Icons.zoom_in_rounded, color: Colors.white),
-              ),
+                TextButton(
+                  onPressed: _resetDocumentZoom,
+                  child: Text(
+                    '${(_documentZoom * 100).round()}%',
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Zoom in',
+                  onPressed: _documentZoom < 5.0
+                      ? () => _setDocumentZoom(_documentZoom + 0.5)
+                      : null,
+                  icon: const Icon(Icons.zoom_in_rounded, color: Colors.white),
+                ),
+              ] else
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Text(
+                    'Teacher view ${(_documentZoom * 100).round()}%',
+                    style: const TextStyle(color: Colors.white70),
+                  ),
+                ),
               if (!widget.isTeacher) ...[
                 Container(width: 1, height: 24, color: Colors.white24),
                 IconButton(
@@ -5332,96 +5566,5 @@ class _PeerSession {
     localVideoSender = null;
     pendingRemoteCandidates.clear();
     processedRemoteCandidateKeys.clear();
-  }
-}
-
-class DrawingStroke {
-  final List<Offset> points;
-  final Color color;
-  final double strokeWidth;
-
-  DrawingStroke({
-    required this.points,
-    required this.color,
-    required this.strokeWidth,
-  });
-
-  Map<String, dynamic> toJson() {
-    return {
-      'points': points.map((p) => {'x': p.dx, 'y': p.dy}).toList(),
-      'color': color.value,
-      'stroke_width': strokeWidth,
-    };
-  }
-
-  factory DrawingStroke.fromJson(Map<dynamic, dynamic> json) {
-    final ptsList = json['points'] as List? ?? [];
-    final points = ptsList.map((p) {
-      final map = p as Map;
-      return Offset((map['x'] as num).toDouble(), (map['y'] as num).toDouble());
-    }).toList();
-    return DrawingStroke(
-      points: points,
-      color: Color(json['color'] as int? ?? Colors.red.value),
-      strokeWidth: (json['stroke_width'] as num? ?? 3.0).toDouble(),
-    );
-  }
-}
-
-class DrawingPainter extends CustomPainter {
-  final List<DrawingStroke> completedStrokes;
-  final DrawingStroke? currentStroke;
-
-  DrawingPainter({required this.completedStrokes, this.currentStroke});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..style = PaintingStyle.stroke;
-
-    for (final stroke in completedStrokes) {
-      if (stroke.points.isEmpty) continue;
-      paint.color = stroke.color;
-      paint.strokeWidth = stroke.strokeWidth;
-
-      final path = Path();
-      path.moveTo(
-        stroke.points.first.dx * size.width,
-        stroke.points.first.dy * size.height,
-      );
-      for (int i = 1; i < stroke.points.length; i++) {
-        path.lineTo(
-          stroke.points[i].dx * size.width,
-          stroke.points[i].dy * size.height,
-        );
-      }
-      canvas.drawPath(path, paint);
-    }
-
-    final current = currentStroke;
-    if (current != null && current.points.isNotEmpty) {
-      paint.color = current.color;
-      paint.strokeWidth = current.strokeWidth;
-
-      final path = Path();
-      path.moveTo(
-        current.points.first.dx * size.width,
-        current.points.first.dy * size.height,
-      );
-      for (int i = 1; i < current.points.length; i++) {
-        path.lineTo(
-          current.points[i].dx * size.width,
-          current.points[i].dy * size.height,
-        );
-      }
-      canvas.drawPath(path, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant DrawingPainter oldDelegate) {
-    return true;
   }
 }

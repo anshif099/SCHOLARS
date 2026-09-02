@@ -232,12 +232,32 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
       text-overflow: ellipsis;
     }
     #presentationPage { color: rgba(255,255,255,.72); flex: none; }
-    #presentationImage, #presentationPdf {
+    #presentationBody {
+      position: relative;
       width: 100%;
       height: calc(100% - 44px);
+      overflow: hidden;
+      background: white;
+    }
+    #presentationContent {
+      position: absolute;
+      inset: 0;
+      transform-origin: 0 0;
+    }
+    #presentationImage, #presentationPdf {
+      width: 100%;
+      height: 100%;
       border: 0;
       object-fit: contain;
       background: white;
+    }
+    #drawingCanvas {
+      position: absolute;
+      z-index: 3;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
     }
   </style>
 </head>
@@ -256,8 +276,13 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
       <span id="presentationName">Shared note</span>
       <span id="presentationPage"></span>
     </div>
-    <img id="presentationImage" alt="Shared class note">
-    <iframe id="presentationPdf"></iframe>
+    <div id="presentationBody">
+      <div id="presentationContent">
+        <img id="presentationImage" alt="Shared class note">
+        <iframe id="presentationPdf"></iframe>
+      </div>
+      <canvas id="drawingCanvas"></canvas>
+    </div>
   </div>
   <script>
     var v = document.getElementById('vid');
@@ -266,41 +291,146 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
     var presentation = document.getElementById('presentation');
     var presentationName = document.getElementById('presentationName');
     var presentationPage = document.getElementById('presentationPage');
+    var presentationBody = document.getElementById('presentationBody');
+    var presentationContent = document.getElementById('presentationContent');
     var presentationImage = document.getElementById('presentationImage');
     var presentationPdf = document.getElementById('presentationPdf');
+    var drawingCanvas = document.getElementById('drawingCanvas');
+    var activePresentationState = null;
+    var loadedResourceKey = '';
 
-    function syncPresentation() {
-      var positionMs = Math.floor((v.currentTime || 0) * 1000);
+    function eventMatchesPresentation(event, state) {
+      if (!state) return false;
+      if (event.url && event.url !== state.url) return false;
+      if (event.page && Number(event.page) !== Number(state.page)) return false;
+      return true;
+    }
+
+    function resolvePresentation(positionMs) {
+      var state = null;
       var index = -1;
       for (var i = 0; i < events.length; i++) {
-        if ((events[i].offset_ms || 0) > positionMs) break;
+        var event = events[i];
+        if ((event.offset_ms || 0) > positionMs) break;
         index = i;
+        if (event.action === 'show') {
+          state = Object.assign({}, event);
+          state.strokes = Array.isArray(event.strokes)
+              ? event.strokes.slice() : [];
+        } else if (event.action === 'hide') {
+          state = null;
+        } else if (event.action === 'stroke' &&
+                   event.stroke && eventMatchesPresentation(event, state)) {
+          state.strokes = (state.strokes || []).concat([event.stroke]);
+        } else if (event.action === 'clear' &&
+                   eventMatchesPresentation(event, state)) {
+          state.strokes = [];
+        } else if (event.action === 'view' &&
+                   eventMatchesPresentation(event, state)) {
+          state.zoom = event.zoom;
+          state.pan_x = event.pan_x;
+          state.pan_y = event.pan_y;
+        }
       }
-      if (index === activeEventIndex) return;
-      activeEventIndex = index;
-      var event = index >= 0 ? events[index] : null;
-      if (!event || event.action !== 'show') {
+      return { index: index, state: state };
+    }
+
+    function boundedNumber(value, minimum, maximum, fallback) {
+      var number = Number(value);
+      if (!Number.isFinite(number)) return fallback;
+      return Math.max(minimum, Math.min(maximum, number));
+    }
+
+    function drawStrokes(state) {
+      var width = presentationBody.clientWidth;
+      var height = presentationBody.clientHeight;
+      var ratio = Math.max(1, window.devicePixelRatio || 1);
+      drawingCanvas.width = Math.max(1, Math.round(width * ratio));
+      drawingCanvas.height = Math.max(1, Math.round(height * ratio));
+      var context = drawingCanvas.getContext('2d');
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      context.clearRect(0, 0, width, height);
+
+      var strokes = state && Array.isArray(state.strokes)
+          ? state.strokes : [];
+      strokes.forEach(function(stroke) {
+        var points = stroke && Array.isArray(stroke.points)
+            ? stroke.points : [];
+        if (!points.length) return;
+
+        var argb = Number(stroke.color || 4294901760) >>> 0;
+        var alpha = ((argb >>> 24) & 255) / 255;
+        var red = (argb >>> 16) & 255;
+        var green = (argb >>> 8) & 255;
+        var blue = argb & 255;
+        context.strokeStyle = 'rgba(' + red + ',' + green + ',' + blue + ',' + alpha + ')';
+        context.lineWidth = boundedNumber(stroke.stroke_width, 1, 24, 3);
+        context.lineCap = 'round';
+        context.lineJoin = 'round';
+        context.beginPath();
+        var firstX = boundedNumber(points[0].x, 0, 1, 0) * width;
+        var firstY = boundedNumber(points[0].y, 0, 1, 0) * height;
+        context.moveTo(firstX, firstY);
+        if (points.length === 1) {
+          context.lineTo(firstX + 0.01, firstY);
+        } else {
+          for (var pointIndex = 1; pointIndex < points.length; pointIndex++) {
+            context.lineTo(
+              boundedNumber(points[pointIndex].x, 0, 1, 0) * width,
+              boundedNumber(points[pointIndex].y, 0, 1, 0) * height
+            );
+          }
+        }
+        context.stroke();
+      });
+    }
+
+    function renderPresentation(state) {
+      activePresentationState = state;
+      if (!state) {
         presentation.style.display = 'none';
         presentationImage.removeAttribute('src');
         presentationPdf.removeAttribute('src');
+        loadedResourceKey = '';
+        drawStrokes(null);
         return;
       }
 
       presentation.style.display = 'block';
-      presentationName.textContent = event.file_name || 'Shared note';
-      var page = Math.max(1, Number(event.page || 1));
-      if (event.file_type === 'pdf') {
+      presentationName.textContent = state.file_name || 'Shared note';
+      var page = Math.max(1, Number(state.page || 1));
+      var resourceKey = (state.file_type || 'image') + '|' + state.url + '|' + page;
+      if (state.file_type === 'pdf') {
         presentationPage.textContent = 'Page ' + page;
         presentationImage.style.display = 'none';
         presentationPdf.style.display = 'block';
-        presentationPdf.src = 'https://docs.google.com/gview?embedded=1&url=' +
-            encodeURIComponent(event.url);
+        if (loadedResourceKey !== resourceKey) {
+          presentationPdf.src = 'https://docs.google.com/gview?embedded=1&url=' +
+              encodeURIComponent(state.url + '#page=' + page);
+        }
       } else {
         presentationPage.textContent = '';
         presentationPdf.style.display = 'none';
         presentationImage.style.display = 'block';
-        presentationImage.src = event.url;
+        if (loadedResourceKey !== resourceKey) {
+          presentationImage.src = state.url;
+        }
       }
+      loadedResourceKey = resourceKey;
+
+      var zoom = boundedNumber(state.zoom, 1, 5, 1);
+      var panX = boundedNumber(state.pan_x, -5, 5, 0) * presentationBody.clientWidth;
+      var panY = boundedNumber(state.pan_y, -5, 5, 0) * presentationBody.clientHeight;
+      presentationContent.style.transform = 'matrix(' + zoom + ',0,0,' + zoom + ',' + panX + ',' + panY + ')';
+      drawStrokes(state);
+    }
+
+    function syncPresentation() {
+      var positionMs = Math.floor((v.currentTime || 0) * 1000);
+      var resolved = resolvePresentation(positionMs);
+      if (resolved.index === activeEventIndex) return;
+      activeEventIndex = resolved.index;
+      renderPresentation(resolved.state);
     }
 
     function reportStatus(status, details) {
@@ -332,6 +462,9 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
     });
     v.addEventListener('timeupdate', syncPresentation);
     v.addEventListener('seeking', syncPresentation);
+    window.addEventListener('resize', function() {
+      renderPresentation(activePresentationState);
+    });
   </script>
 </body>
 </html>
