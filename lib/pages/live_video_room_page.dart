@@ -2429,6 +2429,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     }
 
     _hasEndedCall = true;
+    // Stop document listeners and invalidate any pending PDF/image download
+    // before tearing down the room. Firebase can still deliver a cached
+    // shared_document event while the room is being removed; without this,
+    // that event could briefly replace the live video with a document during
+    // the end-call flow.
+    await _stopSharedDocumentActivity();
     final pendingSaveTask = _recordingSaveTask;
     final shouldAutoSaveRecording =
         widget.isTeacher && pendingSaveTask == null && _hasPendingRecording;
@@ -2906,7 +2912,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       _participantHeartbeatTimer = null;
       _classEndConfirmationTimer?.cancel();
       _classEndConfirmationTimer = null;
-      await _cancelDocumentViewSync();
+      await _stopSharedDocumentActivity();
       for (final timer in _remoteFirstFrameTimers.values) {
         timer.cancel();
       }
@@ -3695,7 +3701,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     _sharedDocumentSub = _webrtcRef.child('shared_document').onValue.listen((
       event,
     ) {
-      if (!mounted) return;
+      if (!mounted || _hasEndedCall || _isCleaningUp) return;
       final val = event.snapshot.value;
       if (val is Map) {
         final doc = Map<String, dynamic>.from(val);
@@ -3801,7 +3807,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     _drawingStrokesSub = _webrtcRef.child('drawing_strokes').onValue.listen((
       event,
     ) {
-      if (!mounted) return;
+      if (!mounted || _hasEndedCall || _isCleaningUp) return;
       final val = event.snapshot.value;
       final List<DrawingStroke> strokes = [];
       if (val is Map) {
@@ -3819,7 +3825,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     _currentStrokeSub = _webrtcRef.child('current_stroke').onValue.listen((
       event,
     ) {
-      if (!mounted) return;
+      if (!mounted || _hasEndedCall || _isCleaningUp) return;
       final val = event.snapshot.value;
       if (val is Map) {
         setState(() {
@@ -4000,6 +4006,50 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     await _documentViewSyncTask;
   }
 
+  /// Ends all shared-document work for this room.
+  ///
+  /// This deliberately does not update Firebase. It is used while leaving a
+  /// class, when the room may already have been removed, and only prevents
+  /// late local callbacks from showing a document or writing it back.
+  Future<void> _stopSharedDocumentActivity() async {
+    _sharedImageLoadGeneration++;
+    _sharedPdfLoadGeneration++;
+    await _cancelDocumentViewSync();
+
+    await _sharedDocumentSub?.cancel();
+    _sharedDocumentSub = null;
+    await _drawingStrokesSub?.cancel();
+    _drawingStrokesSub = null;
+    await _currentStrokeSub?.cancel();
+    _currentStrokeSub = null;
+
+    if (!mounted) {
+      return;
+    }
+
+    _documentTransformationController.value = Matrix4.identity();
+    setState(() {
+      _sharedDocUrl = null;
+      _sharedDocName = null;
+      _sharedDocType = null;
+      _sharedDocPage = 1;
+      _sharedDocPageCount = 0;
+      _sharedPdfDocumentRef = null;
+      _sharedPdfBytes = null;
+      _sharedPdfLoadError = null;
+      _sharedImageBytes = null;
+      _sharedImageLoadError = null;
+      _documentZoom = 1.0;
+      _documentPanX = 0.0;
+      _documentPanY = 0.0;
+      _isDocumentFullScreen = false;
+      _currentStroke = null;
+      _completedStrokes = <DrawingStroke>[];
+      _activePoints = <Offset>[];
+      _localSharedFile = null;
+    });
+  }
+
   bool get _canRecordPresentationAction =>
       widget.isTeacher &&
       _isRecording &&
@@ -4075,6 +4125,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   Future<void> _prepareSharedImage(String url) async {
+    if (_hasEndedCall || _isCleaningUp) {
+      return;
+    }
     final generation = ++_sharedImageLoadGeneration;
     Uint8List? bytes;
     Object? loadError;
@@ -4093,6 +4146,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     }
 
     if (!mounted ||
+        _hasEndedCall ||
+        _isCleaningUp ||
         _sharedDocUrl != url ||
         _sharedDocType != 'image' ||
         generation != _sharedImageLoadGeneration) {
@@ -4107,7 +4162,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
   void _retrySharedImage() {
     final url = _sharedDocUrl;
-    if (url == null || _sharedDocType != 'image' || !mounted) {
+    if (url == null ||
+        _sharedDocType != 'image' ||
+        !mounted ||
+        _hasEndedCall ||
+        _isCleaningUp) {
       return;
     }
 
@@ -4120,6 +4179,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   Future<void> _prepareSharedPdfDocument(String url) async {
+    if (_hasEndedCall || _isCleaningUp) {
+      return;
+    }
     final reloadNonce = _pdfReloadNonce;
     final generation = ++_sharedPdfLoadGeneration;
     Uint8List? bytes;
@@ -4139,6 +4201,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     }
 
     if (!mounted ||
+        _hasEndedCall ||
+        _isCleaningUp ||
         _sharedDocUrl != url ||
         _sharedDocType != 'pdf' ||
         _pdfReloadNonce != reloadNonce ||
@@ -4157,7 +4221,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
   void _retrySharedPdf() {
     final url = _sharedDocUrl;
-    if (url == null || !mounted) {
+    if (url == null || !mounted || _hasEndedCall || _isCleaningUp) {
       return;
     }
 
@@ -4208,7 +4272,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   void _changeSharedPdfPage(int requestedPage) {
-    if (!widget.isTeacher || _sharedDocType != 'pdf') {
+    if (!widget.isTeacher ||
+        _sharedDocType != 'pdf' ||
+        _hasEndedCall ||
+        _isCleaningUp) {
       return;
     }
 
@@ -4231,15 +4298,21 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       _documentPanY = 0.0;
     });
 
-    _pdfPageSyncTask = _pdfPageSyncTask.then(
-      (_) => _webrtcRef.child('shared_document').update(<String, dynamic>{
+    final generation = _documentViewSyncGeneration;
+    _pdfPageSyncTask = _pdfPageSyncTask.then<void>((_) async {
+      if (_hasEndedCall ||
+          _isCleaningUp ||
+          generation != _documentViewSyncGeneration) {
+        return;
+      }
+      await _webrtcRef.child('shared_document').update(<String, dynamic>{
         'current_page': nextPage,
         'page_count': pageCount,
         'zoom': 1.0,
         'pan_x': 0.0,
         'pan_y': 0.0,
-      }),
-    );
+      });
+    });
   }
 
   void _handleSharedPdfLoaded(PdfDocument document) {
@@ -4252,7 +4325,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     }
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _sharedDocType != 'pdf') {
+      if (!mounted ||
+          _hasEndedCall ||
+          _isCleaningUp ||
+          _sharedDocType != 'pdf') {
         return;
       }
 
@@ -4374,6 +4450,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       if (authUid == null) {
         throw Exception('Firebase authentication failed.');
       }
+      if (!mounted || _hasEndedCall || _isCleaningUp) {
+        return;
+      }
 
       final subjectKey = widget.subjectId ?? 'live_call_docs';
       final docKey = 'shared_doc_${DateTime.now().millisecondsSinceEpoch}';
@@ -4398,7 +4477,15 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         await ref.putFile(localFile);
       }
 
+      if (!mounted || _hasEndedCall || _isCleaningUp) {
+        return;
+      }
+
       final downloadUrl = await ref.getDownloadURL();
+
+      if (!mounted || _hasEndedCall || _isCleaningUp) {
+        return;
+      }
 
       await _cancelDocumentViewSync();
       await _webrtcRef.child('drawing_strokes').remove();
@@ -4419,6 +4506,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         _isProcessing = false;
       });
     } catch (e) {
+      if (!mounted || _hasEndedCall || _isCleaningUp) {
+        return;
+      }
       setState(() {
         _isProcessing = false;
       });
