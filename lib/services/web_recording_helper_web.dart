@@ -11,10 +11,12 @@ WebRecordingHelper getHelper() => WebRecordingHelperImpl();
 class WebRecordingHelperImpl implements WebRecordingHelper {
   static const int _videoBitsPerSecond = 500 * 1000;
   static const int _audioBitsPerSecond = 64 * 1000;
+  static const Duration _dataFlushInterval = Duration(minutes: 1);
 
   final List<web.Blob> _chunks = <web.Blob>[];
   web.MediaRecorder? _nativeRecorder;
   Completer<void>? _stopCompleter;
+  Timer? _dataFlushTimer;
   web.Blob? _recordedBlob;
   String _actualMimeType = 'video/webm';
 
@@ -63,6 +65,8 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
     _chunks.clear();
     _recordedBlob = null;
     _nativeRecorder = null;
+    _dataFlushTimer?.cancel();
+    _dataFlushTimer = null;
     _stopCompleter = Completer<void>();
     _sources.clear();
 
@@ -190,10 +194,23 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
     recorder.addEventListener('dataavailable', onData.toJS);
     recorder.addEventListener('stop', onStop.toJS);
     recorder.addEventListener('error', onError.toJS);
-    // Let MediaRecorder finalize one continuous file. Periodic WebKit chunks
-    // produced recordings with no duration/index and duplicate timestamps,
-    // which Safari could not initialize even though their audio was present.
+    // Start without a WebKit timeslice. Older Safari versions produced broken
+    // timestamps when a timeslice was passed directly to start(). Periodic
+    // requestData() calls below still release the browser's growing internal
+    // buffer, while the ordered Blob combination remains one recording.
     recorder.start();
+    _dataFlushTimer = Timer.periodic(_dataFlushInterval, (_) {
+      if (recorder.state != 'inactive') {
+        try {
+          recorder.requestData();
+        } catch (e) {
+          // A stop/error event can race this timer. The final stop still asks
+          // the recorder for any data that has not already been emitted.
+          // ignore: avoid_print
+          print('Could not flush a web recording chunk: $e');
+        }
+      }
+    });
   }
 
   @override
@@ -219,6 +236,9 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
   Future<dynamic> stop() async {
     final recorder = _nativeRecorder;
     if (recorder == null) return null;
+
+    _dataFlushTimer?.cancel();
+    _dataFlushTimer = null;
 
     try {
       if (recorder.state != 'inactive') {

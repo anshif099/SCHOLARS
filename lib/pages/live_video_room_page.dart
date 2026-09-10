@@ -128,6 +128,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   bool _isSavingRecording = false;
   MediaRecorder? _mediaRecorder;
   String? _localVideoPath;
+  Future<bool>? _recordingStopTask;
   Future<bool>? _recordingSaveTask;
   DateTime? _callStartedAt;
   DateTime? _recordingStartTime;
@@ -2381,12 +2382,27 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     await Future<void>.delayed(const Duration(milliseconds: 80));
   }
 
-  Future<bool> _stopTeacherRecording() async {
-    final recorder = _mediaRecorder;
-    if (!widget.isTeacher || recorder == null) {
-      return true;
+  Future<bool> _stopTeacherRecording() {
+    final activeTask = _recordingStopTask;
+    if (activeTask != null) {
+      return activeTask;
     }
 
+    final recorder = _mediaRecorder;
+    if (!widget.isTeacher || recorder == null) {
+      return Future<bool>.value(true);
+    }
+
+    final task = _stopTeacherRecordingInternal(recorder);
+    _recordingStopTask = task;
+    return task.whenComplete(() {
+      if (identical(_recordingStopTask, task)) {
+        _recordingStopTask = null;
+      }
+    });
+  }
+
+  Future<bool> _stopTeacherRecordingInternal(MediaRecorder recorder) async {
     if (mounted) {
       setState(() => _statusMessage = 'Finalizing video...');
     }
