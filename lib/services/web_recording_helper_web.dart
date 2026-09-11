@@ -28,6 +28,7 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
   web.AudioContext? _audioContext;
   web.MediaStreamAudioDestinationNode? _destination;
   final List<web.MediaStreamAudioSourceNode> _sources = [];
+  final Set<String> _mixedRemoteStreamIds = <String>{};
 
   @override
   String get recordedMimeType => _actualMimeType;
@@ -75,6 +76,7 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
     _pendingDataFlush = null;
     _stopCompleter = Completer<void>();
     _sources.clear();
+    _mixedRemoteStreamIds.clear();
 
     final mimeType = _getSupportedMimeType();
     _actualMimeType = mimeType;
@@ -103,6 +105,7 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
         if (remoteStreams != null) {
           for (final rs in remoteStreams) {
             if (rs is MediaStreamWeb) {
+              _mixedRemoteStreamIds.add(rs.id);
               final remoteJsStream = rs.jsStream;
               if (remoteJsStream.getAudioTracks().toDart.isNotEmpty) {
                 try {
@@ -228,6 +231,9 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
     if (_audioContext != null &&
         _destination != null &&
         stream is MediaStreamWeb) {
+      if (!_mixedRemoteStreamIds.add(stream.id)) {
+        return;
+      }
       final remoteJsStream = stream.jsStream;
       if (remoteJsStream.getAudioTracks().toDart.isNotEmpty) {
         try {

@@ -19,6 +19,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../services/web_recording_helper.dart';
 
 import '../services/firebase_upload_auth_service.dart';
+import '../services/cloudflare_sfu_service.dart';
 import '../services/live_class_lifecycle_policy.dart';
 import '../services/live_class_media_policy.dart';
 import '../services/permission_service.dart';
@@ -116,6 +117,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   StreamSubscription<DatabaseEvent>? _participantsSub;
   StreamSubscription<DatabaseEvent>? _classStatusSub;
   StreamSubscription<DatabaseEvent>? _firebaseConnectionSub;
+  StreamSubscription<DatabaseEvent>? _sfuPublicationsSub;
 
   bool _isInitializing = true;
   bool _isMicMuted = false;
@@ -153,6 +155,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   bool _firebaseWasDisconnected = false;
   bool _connectivityRecoveryInProgress = false;
   bool _presenceRefreshInProgress = false;
+  bool _mediaTransportInitialized = false;
+  bool _usingCloudflareSfu = false;
+  bool _sfuRestartInProgress = false;
+  CloudflareSfuService? _sfuService;
   RTCPeerConnection? _loopbackConnectionA;
   RTCPeerConnection? _loopbackConnectionB;
   dynamic _webRecordedBlob;
@@ -222,6 +228,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   DatabaseReference get _participantsRef => _liveClassRef.child('participants');
 
   DatabaseReference get _webrtcRef => _liveClassRef.child('webrtc');
+
+  DatabaseReference get _sfuRef => _liveClassRef.child('sfu');
 
   String get _localRole => widget.isTeacher ? 'teacher' : 'student';
 
@@ -403,7 +411,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       await _registerParticipant();
       _startParticipantHeartbeat();
       _listenForFirebaseConnectionChanges();
-      _listenForSignaling();
+      await _initializeMediaTransport();
       if (!widget.isTeacher) {
         _listenForClassStatus();
       }
@@ -672,7 +680,16 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
           _updateStatus('Waiting for students to join...');
         }
 
-        if (widget.isTeacher) {
+        if (!_mediaTransportInitialized) {
+          return;
+        }
+        if (_usingCloudflareSfu) {
+          final sfuService = _sfuService;
+          if (sfuService != null) {
+            unawaited(_syncCloudflareSubscriptions());
+            unawaited(_applyCloudflareOutgoingVideoLimits());
+          }
+        } else if (widget.isTeacher) {
           unawaited(_syncTeacherStudentPeers(participants));
         } else {
           unawaited(_enforceStudentTeacherOnlyTopology());
@@ -741,6 +758,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     _localVideoTrack = _localStream!.getVideoTracks().isNotEmpty
         ? _localStream!.getVideoTracks().first
         : null;
+    _localAudioTrack?.enabled = !_isMicMuted;
+    _localVideoTrack?.enabled = !_isVideoOff;
     _localRenderer.srcObject = _localStream;
   }
 
@@ -1114,6 +1133,205 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     }
   }
 
+  Future<void> _initializeMediaTransport() async {
+    CloudflareSfuService? candidate;
+    try {
+      final userId = await FirebaseUploadAuthService.ensureSignedIn();
+      if (userId == null) {
+        throw StateError('Firebase authentication is unavailable.');
+      }
+      final service = _createCloudflareSfuService();
+      candidate = service;
+      await service.start();
+      if (_hasEndedCall || _isCleaningUp) {
+        await service.close();
+        return;
+      }
+      _sfuService = service;
+      _usingCloudflareSfu = true;
+      _listenToCloudflarePublications();
+      await _applyCloudflareOutgoingVideoLimits();
+      unawaited(_syncCloudflareSubscriptions());
+      debugPrint('Live class media transport: Cloudflare Realtime SFU');
+    } catch (error, stackTrace) {
+      _reportNonFatalError(
+        'start Cloudflare SFU; using teacher-student fallback',
+        error,
+        stackTrace,
+      );
+      await candidate?.close();
+      if (!identical(candidate, _sfuService)) {
+        await _sfuService?.close();
+      }
+      _sfuService = null;
+      _usingCloudflareSfu = false;
+    } finally {
+      _mediaTransportInitialized = true;
+    }
+
+    if (!_usingCloudflareSfu) {
+      _listenForSignaling();
+      if (widget.isTeacher) {
+        unawaited(_syncTeacherStudentPeers(_participants));
+      }
+    }
+  }
+
+  CloudflareSfuService _createCloudflareSfuService() {
+    final localStream = _localStream;
+    if (localStream == null) {
+      throw StateError('Local media is not ready.');
+    }
+    return CloudflareSfuService(
+      classId: widget.classId,
+      participantId: _localParticipantId,
+      connectionId: _connectionId,
+      localStream: localStream,
+      onRemoteStream: _attachCloudflareRemoteStream,
+      onRemoteParticipantRemoved: (peerId) =>
+          unawaited(_closePeerSession(peerId, removeSignals: false)),
+      onConnectionLost: _handleCloudflareConnectionLost,
+    );
+  }
+
+  void _listenToCloudflarePublications() {
+    _sfuPublicationsSub?.cancel();
+    _sfuPublicationsSub = _sfuRef
+        .child('sessions')
+        .onValue
+        .listen(
+          (_) {
+            final service = _sfuService;
+            if (service != null && !_hasEndedCall && !_isCleaningUp) {
+              unawaited(_syncCloudflareSubscriptions());
+            }
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            _reportNonFatalError(
+              'Cloudflare publication listener',
+              error,
+              stackTrace,
+            );
+          },
+        );
+  }
+
+  void _attachCloudflareRemoteStream(
+    String peerId,
+    MediaStream stream,
+    String? videoTrackId,
+  ) {
+    if (!_usingCloudflareSfu || _hasEndedCall || _isCleaningUp) return;
+    final session = _peerSessions.putIfAbsent(
+      peerId,
+      () => _PeerSession(peerId: peerId),
+    );
+    _attachRemoteStream(session, stream, videoTrackId: videoTrackId);
+  }
+
+  Future<void> _syncCloudflareSubscriptions() async {
+    final service = _sfuService;
+    if (service == null || _hasEndedCall || _isCleaningUp) return;
+    try {
+      await service.syncSubscriptions();
+    } catch (error, stackTrace) {
+      if (!_hasEndedCall && !_isCleaningUp) {
+        _reportNonFatalError(
+          'synchronize Cloudflare subscriptions',
+          error,
+          stackTrace,
+        );
+      }
+    }
+  }
+
+  void _handleCloudflareConnectionLost() {
+    if (!_usingCloudflareSfu || _hasEndedCall || _isCleaningUp) return;
+    if (mounted) {
+      setState(() {
+        _statusMessage = 'Connection interrupted. Reconnecting...';
+      });
+    }
+    _studentReconnectTimer?.cancel();
+    _studentReconnectTimer = Timer(
+      _studentReconnectDelay,
+      () => unawaited(_restartCloudflareSfu()),
+    );
+  }
+
+  Future<void> _restartCloudflareSfu() async {
+    if (!_usingCloudflareSfu ||
+        _sfuRestartInProgress ||
+        _hasEndedCall ||
+        _isCleaningUp) {
+      return;
+    }
+    _sfuRestartInProgress = true;
+    try {
+      final previous = _sfuService;
+      _sfuService = null;
+      await previous?.close();
+      await _closeAllPeerSessions(removeSignals: false);
+      final replacement = _createCloudflareSfuService();
+      await replacement.start();
+      if (_hasEndedCall || _isCleaningUp) {
+        await replacement.close();
+        return;
+      }
+      _sfuService = replacement;
+      await _applyCloudflareOutgoingVideoLimits();
+      await replacement.syncSubscriptions();
+      if (mounted) {
+        setState(() {
+          _showStudentReconnectAction = false;
+          _errorMessage = null;
+          _statusMessage = 'Connected. Waiting for video...';
+        });
+      }
+    } catch (error, stackTrace) {
+      _reportNonFatalError('restart Cloudflare SFU', error, stackTrace);
+      if (mounted && !widget.isTeacher) {
+        setState(() => _showStudentReconnectAction = true);
+      }
+    } finally {
+      _sfuRestartInProgress = false;
+    }
+  }
+
+  Future<void> _applyCloudflareOutgoingVideoLimits() async {
+    final service = _sfuService;
+    if (service == null) return;
+    final senders = await service.getSenders();
+    final studentCount = _participants
+        .where((participant) => participant['role'] == 'student')
+        .length;
+    final limits = liveClassVideoLimits(
+      isTeacher: widget.isTeacher,
+      studentCount: studentCount,
+    );
+    for (final sender in senders) {
+      if (sender.track?.kind != 'video') continue;
+      try {
+        final parameters = sender.parameters;
+        parameters.degradationPreference = RTCDegradationPreference.BALANCED;
+        final encodings = parameters.encodings;
+        if (encodings != null) {
+          for (final encoding in encodings) {
+            encoding.maxBitrate = limits.maxBitrate;
+            encoding.maxFramerate = limits.maxFrameRate;
+          }
+          await sender.setParameters(parameters);
+        }
+      } catch (error, stackTrace) {
+        _reportNonFatalError(
+          'apply Cloudflare video limits',
+          error,
+          stackTrace,
+        );
+      }
+    }
+  }
+
   void _listenForSignaling() {
     if (!widget.isTeacher) {
       unawaited(
@@ -1361,6 +1579,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   Future<void> _resetTeacherSession() async {
     try {
       await _webrtcRef.remove();
+      await _sfuRef.remove();
       await _participantsRef.remove();
       await _webrtcRef.child('status').set('waiting_for_students');
     } catch (error, stackTrace) {
@@ -1558,12 +1777,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
           _statusMessage = widget.isTeacher
               ? 'Student video did not arrive.'
               : 'Teacher video did not arrive. Reconnecting...';
-          if (!widget.isTeacher && peerId == _localParticipantId) {
+          if (!widget.isTeacher && _isTeacherRemotePeer(peerId)) {
             _showStudentReconnectAction = true;
           }
         });
       }
-      if (!widget.isTeacher && peerId == _localParticipantId) {
+      if (!widget.isTeacher && _isTeacherRemotePeer(peerId)) {
         _scheduleStudentReconnect();
       }
     });
@@ -1582,7 +1801,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       return;
     }
 
-    if (!widget.isTeacher && peerId == _localParticipantId) {
+    if (!widget.isTeacher && _isTeacherRemotePeer(peerId)) {
       _studentReconnectTimer?.cancel();
       _studentReconnectTimer = null;
       _studentReconnectAttempts = 0;
@@ -2134,7 +2353,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       _statusMessage = message;
     });
 
-    if (!widget.isTeacher && peerId == _localParticipantId) {
+    if (!widget.isTeacher && _isTeacherRemotePeer(peerId)) {
       _scheduleStudentReconnect();
     }
   }
@@ -2168,6 +2387,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         _hasEndedCall ||
         _isCleaningUp ||
         _isStudentTeacherConnected) {
+      return;
+    }
+
+    if (_usingCloudflareSfu) {
+      await _restartCloudflareSfu();
       return;
     }
 
@@ -2866,6 +3090,15 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       _classStatusSub = null;
       await _firebaseConnectionSub?.cancel();
       _firebaseConnectionSub = null;
+      await _sfuPublicationsSub?.cancel();
+      _sfuPublicationsSub = null;
+
+      final sfuService = _sfuService;
+      _sfuService = null;
+      if (sfuService != null) {
+        await sfuService.close();
+      }
+      _usingCloudflareSfu = false;
 
       // 2. Remove room state from database
       if (shouldMutateRoom) {
@@ -2975,8 +3208,26 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
   bool get _isStudentTeacherConnected {
     if (widget.isTeacher) return true;
-    return _remoteRenderers[_localParticipantId]?.srcObject != null &&
-        _remotePeersWithFirstFrame.contains(_localParticipantId);
+    final teacherPeerId = _teacherRemotePeerId;
+    if (teacherPeerId == null) return false;
+    return _remoteRenderers[teacherPeerId]?.srcObject != null &&
+        _remotePeersWithFirstFrame.contains(teacherPeerId);
+  }
+
+  String? get _teacherRemotePeerId {
+    if (widget.isTeacher) return null;
+    if (!_usingCloudflareSfu) return _localParticipantId;
+    for (final participant in _participants) {
+      if (participant['role'] == 'teacher') {
+        final id = participant['id']?.toString();
+        if (id != null && id.isNotEmpty) return id;
+      }
+    }
+    return null;
+  }
+
+  bool _isTeacherRemotePeer(String peerId) {
+    return !widget.isTeacher && peerId == _teacherRemotePeerId;
   }
 
   List<MapEntry<String, RTCVideoRenderer>> get _connectedRemoteRenderers {
@@ -3612,9 +3863,13 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     // A student must always see the teacher in the full main area. Other
     // students never push the teacher into a grid or the small self-view.
     if (!widget.isTeacher) {
-      final teacherRenderer = _remoteRenderers[_localParticipantId];
+      final teacherPeerId = _teacherRemotePeerId;
+      final teacherRenderer = teacherPeerId == null
+          ? null
+          : _remoteRenderers[teacherPeerId];
       if (teacherRenderer?.srcObject != null &&
-          _remotePeersWithFirstFrame.contains(_localParticipantId)) {
+          teacherPeerId != null &&
+          _remotePeersWithFirstFrame.contains(teacherPeerId)) {
         return ColoredBox(
           color: Colors.black,
           child: RTCVideoView(
