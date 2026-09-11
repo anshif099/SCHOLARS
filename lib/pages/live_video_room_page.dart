@@ -68,7 +68,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   static const int _recordingMaxFrameRate = 30;
   static const int _recordingTargetKbPerMinute = 1000;
   static const String _recordingQuality = '360p';
-  static const Duration _recorderStopTimeout = Duration(seconds: 10);
+  // Android finalizes audio and video on separate native threads. Each thread
+  // has its own five-second cleanup window, so a ten-second Dart timeout can
+  // expire just before a valid MP4 is closed and returned. Keep this bound
+  // comfortably above the native worst case, especially for long classes.
+  static const Duration _recorderStopTimeout = Duration(seconds: 30);
   static const Duration _roomCleanupTimeout = Duration(seconds: 6);
   static const Duration _uploadRetryLimit = Duration(minutes: 30);
   static const Duration _studentReconnectDelay = Duration(seconds: 2);
