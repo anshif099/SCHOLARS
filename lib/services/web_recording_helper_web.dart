@@ -11,11 +11,16 @@ WebRecordingHelper getHelper() => WebRecordingHelperImpl();
 class WebRecordingHelperImpl implements WebRecordingHelper {
   static const int _videoBitsPerSecond = 500 * 1000;
   static const int _audioBitsPerSecond = 64 * 1000;
-  static const Duration _dataFlushInterval = Duration(minutes: 1);
+  // Mobile Safari may discard a large in-memory recording before a long class
+  // ends. Flush small chunks frequently enough that almost all recorded data
+  // is already owned by Dart even if WebKit struggles during the final stop.
+  static const Duration _dataFlushInterval = Duration(seconds: 15);
+  static const Duration _finalDataFlushTimeout = Duration(seconds: 3);
 
   final List<web.Blob> _chunks = <web.Blob>[];
   web.MediaRecorder? _nativeRecorder;
   Completer<void>? _stopCompleter;
+  Completer<void>? _pendingDataFlush;
   Timer? _dataFlushTimer;
   web.Blob? _recordedBlob;
   String _actualMimeType = 'video/webm';
@@ -67,6 +72,7 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
     _nativeRecorder = null;
     _dataFlushTimer?.cancel();
     _dataFlushTimer = null;
+    _pendingDataFlush = null;
     _stopCompleter = Completer<void>();
     _sources.clear();
 
@@ -175,6 +181,10 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
           _chunks.add(blob);
         }
       }
+      final pendingFlush = _pendingDataFlush;
+      if (pendingFlush != null && !pendingFlush.isCompleted) {
+        pendingFlush.complete();
+      }
     }
 
     void onStop(web.Event event) {
@@ -242,6 +252,25 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
 
     try {
       if (recorder.state != 'inactive') {
+        // Safari sometimes takes too long to emit the final dataavailable
+        // event for a long recording. Request and receive the current data
+        // first, then stop the recorder. Previously a stop timeout could leave
+        // _chunks empty and the class was marked finalization_failed.
+        final flushCompleter = Completer<void>();
+        _pendingDataFlush = flushCompleter;
+        try {
+          recorder.requestData();
+          await flushCompleter.future.timeout(_finalDataFlushTimeout);
+        } catch (e) {
+          // stop() still emits its own final dataavailable event, so continue
+          // when a browser does not support an explicit final flush reliably.
+          // ignore: avoid_print
+          print('Could not flush final web recording data: $e');
+        } finally {
+          if (identical(_pendingDataFlush, flushCompleter)) {
+            _pendingDataFlush = null;
+          }
+        }
         recorder.stop();
       }
       await _stopCompleter?.future.timeout(const Duration(seconds: 20));
