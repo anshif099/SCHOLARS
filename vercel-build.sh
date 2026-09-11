@@ -19,6 +19,16 @@ echo "=== Enabling Web Support ==="
 flutter config --enable-web
 
 echo "=== Building Flutter Web Project ==="
-flutter build web --release
+TURN_ARGS=()
+if [ -n "${WEBRTC_TURN_URLS:-}" ] && [ -n "${WEBRTC_TURN_USERNAME:-}" ] && [ -n "${WEBRTC_TURN_CREDENTIAL:-}" ]; then
+  TURN_ARGS+=("--dart-define=WEBRTC_TURN_URLS=${WEBRTC_TURN_URLS}")
+  TURN_ARGS+=("--dart-define=WEBRTC_TURN_USERNAME=${WEBRTC_TURN_USERNAME}")
+  TURN_ARGS+=("--dart-define=WEBRTC_TURN_CREDENTIAL=${WEBRTC_TURN_CREDENTIAL}")
+  echo "=== TURN relay configuration enabled ==="
+else
+  echo "=== WARNING: TURN relay configuration is incomplete; using STUN only ==="
+fi
+
+flutter build web --release "${TURN_ARGS[@]}"
 
 echo "=== Build Completed Successfully ==="

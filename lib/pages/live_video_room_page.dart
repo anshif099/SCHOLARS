@@ -20,6 +20,7 @@ import '../services/web_recording_helper.dart';
 
 import '../services/firebase_upload_auth_service.dart';
 import '../services/live_class_lifecycle_policy.dart';
+import '../services/live_class_media_policy.dart';
 import '../services/permission_service.dart';
 import '../theme/app_theme.dart';
 import '../components/web_pdf_page_view.dart';
@@ -233,33 +234,24 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     if (widget.isTeacher) {
       return _webrtcRef.child('peers').child(peerId);
     }
-    if (peerId == _localParticipantId) {
-      return _webrtcRef.child('peers').child(_localParticipantId);
-    }
-    final sorted = [_localParticipantId, peerId]..sort();
-    return _webrtcRef.child('peers').child('${sorted[0]}_${sorted[1]}');
+    // A student has exactly one media connection: their own signaling node
+    // paired with the teacher. Student-to-student mesh links grow quadratically
+    // and overwhelmed newly registered classes with 9-11 active students.
+    return _webrtcRef.child('peers').child(_localParticipantId);
   }
 
   String _sessionLocalSignalRole(String peerId) {
     if (widget.isTeacher) {
       return 'teacher';
     }
-    if (peerId == _localParticipantId) {
-      return 'student';
-    }
-    final isOfferer = _localParticipantId.compareTo(peerId) < 0;
-    return isOfferer ? 'offerer' : 'answerer';
+    return 'student';
   }
 
   String _sessionRemoteSignalRole(String peerId) {
     if (widget.isTeacher) {
       return 'student';
     }
-    if (peerId == _localParticipantId) {
-      return 'teacher';
-    }
-    final isOfferer = _localParticipantId.compareTo(peerId) < 0;
-    return isOfferer ? 'answerer' : 'offerer';
+    return 'teacher';
   }
 
   Map<String, dynamic> get _rtcConfiguration => <String, dynamic>{
@@ -278,6 +270,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     _localParticipantId = _buildLocalParticipantId();
     _localParticipantName = _buildLocalParticipantName();
     _connectionId = _buildConnectionId();
+    // Students join muted to prevent many microphones and echo paths from
+    // competing with the teacher's audio as a large class joins at once.
+    _isMicMuted = !widget.isTeacher;
     _callStartedAt = DateTime.now();
     _localStream = widget.initialLocalStream;
     _statusMessage = widget.isTeacher
@@ -680,7 +675,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         if (widget.isTeacher) {
           unawaited(_syncTeacherStudentPeers(participants));
         } else {
-          unawaited(_syncStudentStudentPeers(participants));
+          unawaited(_enforceStudentTeacherOnlyTopology());
         }
       },
       onError: (Object error, StackTrace stackTrace) {
@@ -919,6 +914,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
       await _startTeacherPeer(studentId, connectionId);
     }
+
+    // Existing senders must also adopt the lower per-peer limit when more
+    // students join after their connection was created.
+    await Future.wait(
+      _peerSessions.values.map(_applyOutgoingVideoLimitsForSession),
+    );
   }
 
   Future<void> _startTeacherPeer(String studentId, String? connectionId) async {
@@ -974,104 +975,17 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     }
   }
 
-  Future<void> _syncStudentStudentPeers(
-    List<Map<String, dynamic>> participants,
-  ) async {
-    if (widget.isTeacher ||
-        _hasEndedCall ||
-        _isCleaningUp ||
-        _localStream == null) {
+  Future<void> _enforceStudentTeacherOnlyTopology() async {
+    if (widget.isTeacher || _hasEndedCall || _isCleaningUp) {
       return;
     }
 
-    final otherStudentConnections = <String, String?>{};
-    for (final participant in participants) {
-      final studentId = participant['id']?.toString() ?? '';
-      if (participant['role'] != 'student' ||
-          studentId.isEmpty ||
-          studentId == _localParticipantId) {
-        continue;
-      }
-      otherStudentConnections[studentId] = participant['connection_id']
-          ?.toString();
-    }
-    final otherStudentIds = otherStudentConnections.keys.toSet();
-
+    // Clean up sessions created by an older in-memory topology without
+    // touching this student's teacher signaling node.
     for (final peerId in List<String>.from(_peerSessions.keys)) {
-      if (peerId != _localParticipantId && !otherStudentIds.contains(peerId)) {
-        await _closePeerSession(peerId, removeSignals: true);
+      if (peerId != _localParticipantId) {
+        await _closePeerSession(peerId, removeSignals: false);
       }
-    }
-
-    for (final studentId in otherStudentIds) {
-      final connectionId = otherStudentConnections[studentId];
-      final existingSession = _peerSessions[studentId];
-      if (existingSession != null &&
-          connectionId != null &&
-          connectionId.isNotEmpty &&
-          existingSession.remoteConnectionId != connectionId) {
-        await _closePeerSession(studentId, removeSignals: true);
-      }
-
-      if (_peerSessions.containsKey(studentId) ||
-          _teacherPeerStartInProgress.contains(studentId)) {
-        continue;
-      }
-
-      await _startStudentStudentPeer(studentId, connectionId);
-    }
-  }
-
-  Future<void> _startStudentStudentPeer(
-    String studentId,
-    String? connectionId,
-  ) async {
-    _teacherPeerStartInProgress.add(studentId);
-
-    try {
-      final session = await _createPeerSession(
-        studentId,
-        remoteConnectionId: connectionId,
-      );
-      _listenToRemoteCandidates(session);
-
-      final isOfferer = _localParticipantId.compareTo(studentId) < 0;
-      if (isOfferer) {
-        session.answerSub = _sessionSignalRef(studentId)
-            .child('answer')
-            .onValue
-            .listen(
-              (event) => unawaited(_handleAnswerUpdated(studentId, event)),
-              onError: (Object error, StackTrace stackTrace) {
-                _reportNonFatalError(
-                  'student answer listener',
-                  error,
-                  stackTrace,
-                );
-              },
-            );
-
-        await _createAndSendOffer(studentId);
-      } else {
-        session.offerSub = _sessionSignalRef(studentId)
-            .child('offer')
-            .onValue
-            .listen(
-              (event) => unawaited(_handleOfferUpdated(studentId, event)),
-              onError: (Object error, StackTrace stackTrace) {
-                _reportNonFatalError(
-                  'student offer listener',
-                  error,
-                  stackTrace,
-                );
-              },
-            );
-      }
-    } catch (error, stackTrace) {
-      _reportNonFatalError('start student student peer', error, stackTrace);
-      await _closePeerSession(studentId, removeSignals: true);
-    } finally {
-      _teacherPeerStartInProgress.remove(studentId);
     }
   }
 
@@ -1163,6 +1077,13 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     }
 
     try {
+      final studentCount = _participants
+          .where((participant) => participant['role'] == 'student')
+          .length;
+      final limits = liveClassVideoLimits(
+        isTeacher: widget.isTeacher,
+        studentCount: studentCount,
+      );
       final parameters = sender.parameters;
       parameters.degradationPreference = RTCDegradationPreference.BALANCED;
 
@@ -1170,8 +1091,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       if (encodings == null || encodings.isEmpty) {
         parameters.encodings = <RTCRtpEncoding>[
           RTCRtpEncoding(
-            maxBitrate: _callVideoMaxBitrate,
-            maxFramerate: _callVideoMaxFrameRate,
+            maxBitrate: limits.maxBitrate,
+            maxFramerate: limits.maxFrameRate,
             scaleResolutionDownBy: 1.0,
             priority: RTCPriorityType.high,
             networkPriority: RTCPriorityType.high,
@@ -1179,8 +1100,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         ];
       } else {
         for (final encoding in encodings) {
-          encoding.maxBitrate = _callVideoMaxBitrate;
-          encoding.maxFramerate = _callVideoMaxFrameRate;
+          encoding.maxBitrate = limits.maxBitrate;
+          encoding.maxFramerate = limits.maxFrameRate;
           encoding.scaleResolutionDownBy ??= 1.0;
           encoding.priority = RTCPriorityType.high;
           encoding.networkPriority = RTCPriorityType.high;
