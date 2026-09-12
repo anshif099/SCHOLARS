@@ -190,6 +190,9 @@ class CloudflareSfuService {
       }
     }
 
+    if (response['hasMoreSubscriptions'] == true) {
+      _subscriptionSyncRequested = true;
+    }
     if (response['requiresImmediateRenegotiation'] != true) return;
     final offer = _sessionDescription(response['sessionDescription'], 'offer');
     await consumer.setRemoteDescription(offer);

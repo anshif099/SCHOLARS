@@ -16,6 +16,9 @@ const CLOUDFLARE_REALTIME_BASE_URL = "https://rtc.live.cloudflare.com/v1";
 const CLOUDFLARE_REALTIME_APP_ID_SECRET = "CLOUDFLARE_REALTIME_APP_ID";
 const CLOUDFLARE_REALTIME_APP_SECRET = "CLOUDFLARE_REALTIME_APP_SECRET";
 const SFU_REQUEST_TIMEOUT_MS = 15000;
+// Cloudflare accepts at most 64 tracks in one API request. Keep a little
+// headroom and negotiate additional batches on subsequent callable requests.
+const SFU_TRACKS_PER_SUBSCRIPTION_BATCH = 60;
 
 function requireCallableAuth(context) {
   if (!context.auth) {
@@ -373,12 +376,19 @@ async function subscribeCloudflareSfuTracks(data) {
       replacement.trackName !== track.trackName;
   });
   if (stale.length > 0) {
-    await callCloudflareRealtime(
-      `/sessions/${encodeURIComponent(current.session.consumer_session_id)}` +
-        "/tracks/close",
-      "PUT",
-      {force: true, tracks: stale.map((track) => ({mid: track.mid}))}
-    );
+    for (let offset = 0; offset < stale.length;
+      offset += SFU_TRACKS_PER_SUBSCRIPTION_BATCH) {
+      const batch = stale.slice(
+        offset,
+        offset + SFU_TRACKS_PER_SUBSCRIPTION_BATCH
+      );
+      await callCloudflareRealtime(
+        `/sessions/${encodeURIComponent(current.session.consumer_session_id)}` +
+          "/tracks/close",
+        "PUT",
+        {force: true, tracks: batch.map((track) => ({mid: track.mid}))}
+      );
+    }
   }
 
   const currentByKey = new Map(
@@ -386,12 +396,13 @@ async function subscribeCloudflareSfuTracks(data) {
       .filter(Boolean)
       .map((track) => [track.key, track])
   );
-  const add = desired.filter((track) => {
+  const pendingAdd = desired.filter((track) => {
     const old = currentByKey.get(track.key);
     return !old ||
       old.sessionId !== track.sessionId ||
       old.trackName !== track.trackName;
   });
+  const add = pendingAdd.slice(0, SFU_TRACKS_PER_SUBSCRIPTION_BATCH);
   let result = {requiresImmediateRenegotiation: false, tracks: []};
   if (add.length > 0) {
     result = await callCloudflareRealtime(
@@ -417,7 +428,12 @@ async function subscribeCloudflareSfuTracks(data) {
   const responseByName = new Map(
     (result.tracks || []).map((track) => [track.trackName, track])
   );
-  const subscriptions = desired.map((track) => {
+  // Return/store the still-valid old tracks plus the batch added now. Tracks
+  // beyond this batch are negotiated by the client's serialized sync loop.
+  const addedKeys = new Set(add.map((track) => track.key));
+  const subscriptions = desired
+    .filter((track) => currentByKey.has(track.key) || addedKeys.has(track.key))
+    .map((track) => {
     const old = currentByKey.get(track.key);
     const responseTrack = responseByName.get(track.trackName);
     return {...track, mid: String(responseTrack && responseTrack.mid || old && old.mid || "")};
@@ -440,6 +456,7 @@ async function subscribeCloudflareSfuTracks(data) {
       result.requiresImmediateRenegotiation === true,
     sessionDescription: result.sessionDescription || null,
     subscriptions,
+    hasMoreSubscriptions: pendingAdd.length > add.length,
   };
 }
 
