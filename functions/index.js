@@ -15,7 +15,6 @@ const STORAGE_BUCKET = "scholars-c23e4.firebasestorage.app";
 const CLOUDFLARE_REALTIME_BASE_URL = "https://rtc.live.cloudflare.com/v1";
 const CLOUDFLARE_REALTIME_APP_ID_SECRET = "CLOUDFLARE_REALTIME_APP_ID";
 const CLOUDFLARE_REALTIME_APP_SECRET = "CLOUDFLARE_REALTIME_APP_SECRET";
-const SFU_MAX_STUDENT_VIEWERS = 12;
 const SFU_REQUEST_TIMEOUT_MS = 15000;
 
 function requireCallableAuth(context) {
@@ -300,6 +299,9 @@ async function publishCloudflareSfuTracks(data) {
     };
   }
   await current.sessionRef.update({publications});
+  await current.liveClassRef.child("sfu/publications_revision").set(
+    admin.database.ServerValue.TIMESTAMP
+  );
   return {
     sessionDescription: result.sessionDescription,
     tracks: requested.map((track) => ({kind: track.kind, mid: track.mid})),
@@ -323,9 +325,10 @@ function selectSfuPublications(allSessions, activeParticipants, current) {
     if (right.role === "teacher" && left.role !== "teacher") return 1;
     return left.participantId.localeCompare(right.participantId);
   });
-  const selected = current.role === "teacher"
-    ? candidates
-    : candidates.slice(0, SFU_MAX_STUDENT_VIEWERS);
+  // Everyone receives every participant, but non-teacher cameras use the
+  // thumbnail simulcast layer. This preserves group-call behavior without
+  // downloading 29 full-resolution feeds on each phone.
+  const selected = candidates;
   return selected.flatMap((session) =>
     Object.values(session.publications || {})
       .filter((track) =>
@@ -341,6 +344,9 @@ function selectSfuPublications(allSessions, activeParticipants, current) {
         role: session.role,
         sessionId: track.session_id,
         trackName: track.track_name,
+        preferredRid: track.kind === "video"
+          ? (session.role === "teacher" ? "h" : "q")
+          : null,
       }))
   );
 }
@@ -397,6 +403,13 @@ async function subscribeCloudflareSfuTracks(data) {
           location: "remote",
           sessionId: track.sessionId,
           trackName: track.trackName,
+          ...(track.preferredRid ? {
+            simulcast: {
+              preferredRid: track.preferredRid,
+              priorityOrdering: "asciibetical",
+              ridNotAvailable: "asciibetical",
+            },
+          } : {}),
         })),
       }
     );
@@ -464,6 +477,9 @@ async function closeCloudflareSfu(data) {
     ),
   ]);
   await current.sessionRef.remove();
+  await current.liveClassRef.child("sfu/publications_revision").set(
+    admin.database.ServerValue.TIMESTAMP
+  );
   return {ok: true};
 }
 

@@ -32,7 +32,9 @@ Cloudflare credential or compile-time flag belongs in Flutter or Vercel.
 
 - Each device publishes one audio track and one video track to Cloudflare.
 - The teacher subscribes to every active student's tracks.
-- A student subscribes to the teacher and up to 11 other active participants.
+- Every participant receives everyone's audio. Video is published in three
+  simulcast layers; students receive a clearer teacher layer and low-bandwidth
+  thumbnail layers for other students so a 30-person grid remains practical.
 - Firebase continues to provide authentication, presence, classroom state,
   whiteboard state, notifications, and recording metadata.
 - If Cloudflare is unavailable during startup, the existing teacher/student

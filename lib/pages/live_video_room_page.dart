@@ -827,14 +827,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     };
 
     peerConnection.onTrack = (event) {
-      if (event.streams.isNotEmpty) {
-        final track = event.track;
-        _attachRemoteStream(
-          session,
-          event.streams.first,
-          videoTrackId: track.kind == 'video' ? track.id : null,
-        );
-      }
+      // Unified Plan may deliver a track without a MediaStream. Several
+      // Android builds do this for audio; ignoring it silences the teacher.
+      unawaited(_handleRemoteTrack(session, event));
     };
 
     peerConnection.onConnectionState = (state) {
@@ -886,6 +881,40 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     };
 
     return session;
+  }
+
+  Future<void> _handleRemoteTrack(
+    _PeerSession session,
+    RTCTrackEvent event,
+  ) async {
+    if (!_canAttachRemoteStream(session)) return;
+
+    MediaStream stream;
+    if (event.streams.isNotEmpty) {
+      stream = event.streams.first;
+    } else {
+      stream = session.fallbackRemoteStream ??= await createLocalMediaStream(
+        'remote_${session.peerId}_$_connectionId',
+      );
+      final trackId = event.track.id;
+      if (trackId != null &&
+          trackId.isNotEmpty &&
+          stream.getTrackById(trackId) == null) {
+        await stream.addTrack(event.track);
+      }
+    }
+
+    if (!_canAttachRemoteStream(session)) return;
+    session.hasReceivedMedia = true;
+    if (event.track.kind == 'audio') {
+      session.hasReceivedAudio = true;
+      event.track.enabled = true;
+    }
+    _attachRemoteStream(
+      session,
+      stream,
+      videoTrackId: event.track.kind == 'video' ? event.track.id : null,
+    );
   }
 
   Future<void> _syncTeacherStudentPeers(
@@ -1196,8 +1225,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
   void _listenToCloudflarePublications() {
     _sfuPublicationsSub?.cancel();
+    // Subscription writes must not wake every client. Doing that creates a
+    // request storm as a 20-30 user class joins.
     _sfuPublicationsSub = _sfuRef
-        .child('sessions')
+        .child('publications_revision')
         .onValue
         .listen(
           (_) {
@@ -1226,6 +1257,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       peerId,
       () => _PeerSession(peerId: peerId),
     );
+    session.hasReceivedMedia = true;
+    session.hasReceivedAudio = stream.getAudioTracks().isNotEmpty;
     _attachRemoteStream(session, stream, videoTrackId: videoTrackId);
   }
 
@@ -1317,8 +1350,14 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         final encodings = parameters.encodings;
         if (encodings != null) {
           for (final encoding in encodings) {
-            encoding.maxBitrate = limits.maxBitrate;
-            encoding.maxFramerate = limits.maxFrameRate;
+            final configuredLimit = encoding.maxBitrate;
+            encoding.maxBitrate = configuredLimit == null
+                ? limits.maxBitrate
+                : min(configuredLimit, limits.maxBitrate);
+            final configuredFrameRate = encoding.maxFramerate;
+            encoding.maxFramerate = configuredFrameRate == null
+                ? limits.maxFrameRate
+                : min(configuredFrameRate, limits.maxFrameRate);
           }
           await sender.setParameters(parameters);
         }
@@ -1768,21 +1807,28 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         return;
       }
 
-      // A stream object without a decoded frame is the black-screen state.
-      // Detaching it restores the placeholder and allows student recovery.
-      renderer.srcObject = null;
+      // Keep audio attached when video decoding is late. Clearing srcObject
+      // here also silences a healthy teacher audio track.
       if (mounted) {
         setState(() {
           _isRemoteConnected = _connectedRemoteCount > 0;
-          _statusMessage = widget.isTeacher
-              ? 'Student video did not arrive.'
-              : 'Teacher video did not arrive. Reconnecting...';
-          if (!widget.isTeacher && _isTeacherRemotePeer(peerId)) {
+          _statusMessage = session.hasReceivedAudio
+              ? (widget.isTeacher
+                    ? 'Student connected (audio only).'
+                    : 'Live audio connected. Waiting for teacher video...')
+              : (widget.isTeacher
+                    ? 'Student video did not arrive.'
+                    : 'Teacher media did not arrive. Reconnecting...');
+          if (!session.hasReceivedMedia &&
+              !widget.isTeacher &&
+              _isTeacherRemotePeer(peerId)) {
             _showStudentReconnectAction = true;
           }
         });
       }
-      if (!widget.isTeacher && _isTeacherRemotePeer(peerId)) {
+      if (!session.hasReceivedMedia &&
+          !widget.isTeacher &&
+          _isTeacherRemotePeer(peerId)) {
         _scheduleStudentReconnect();
       }
     });
@@ -2324,6 +2370,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       return;
     }
 
+    _peerSessions[peerId]?.transportConnected = true;
     setState(() {
       _focusedRemotePeerId ??= peerId;
       final connectedCount = _connectedRemoteCount;
@@ -2336,6 +2383,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   void _handleRemoteDisconnect(String peerId, String message) {
+    _peerSessions[peerId]?.transportConnected = false;
     _remoteFirstFrameTimers.remove(peerId)?.cancel();
     _remotePeersWithFirstFrame.remove(peerId);
     final renderer = _remoteRenderers[peerId];
@@ -3210,8 +3258,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     if (widget.isTeacher) return true;
     final teacherPeerId = _teacherRemotePeerId;
     if (teacherPeerId == null) return false;
-    return _remoteRenderers[teacherPeerId]?.srcObject != null &&
-        _remotePeersWithFirstFrame.contains(teacherPeerId);
+    final session = _peerSessions[teacherPeerId];
+    return session?.transportConnected == true ||
+        session?.hasReceivedMedia == true;
   }
 
   String? get _teacherRemotePeerId {
@@ -5821,11 +5870,15 @@ class _PeerSession {
   RTCPeerConnection? connection;
   RTCRtpSender? localAudioSender;
   RTCRtpSender? localVideoSender;
+  MediaStream? fallbackRemoteStream;
   StreamSubscription<DatabaseEvent>? offerSub;
   StreamSubscription<DatabaseEvent>? answerSub;
   StreamSubscription<DatabaseEvent>? remoteCandidatesSub;
 
   bool remoteDescriptionApplied = false;
+  bool transportConnected = false;
+  bool hasReceivedMedia = false;
+  bool hasReceivedAudio = false;
   bool isClosing = false;
 
   Future<void> close() async {
@@ -5848,6 +5901,8 @@ class _PeerSession {
     }
 
     connection = null;
+    await fallbackRemoteStream?.dispose();
+    fallbackRemoteStream = null;
     localAudioSender = null;
     localVideoSender = null;
     pendingRemoteCandidates.clear();

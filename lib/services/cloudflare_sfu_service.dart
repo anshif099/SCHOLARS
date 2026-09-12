@@ -82,6 +82,31 @@ class CloudflareSfuService {
         init: RTCRtpTransceiverInit(
           direction: TransceiverDirection.SendOnly,
           streams: <MediaStream>[localStream],
+          // Publish three small simulcast layers. Cloudflare can forward a
+          // thumbnail layer for the participant grid and a clearer layer for
+          // the teacher instead of sending every subscriber full resolution.
+          sendEncodings: track.kind == 'video'
+              ? <RTCRtpEncoding>[
+                  RTCRtpEncoding(
+                    rid: 'f',
+                    maxBitrate: 180 * 1000,
+                    maxFramerate: 15,
+                    scaleResolutionDownBy: 1,
+                  ),
+                  RTCRtpEncoding(
+                    rid: 'h',
+                    maxBitrate: 100 * 1000,
+                    maxFramerate: 12,
+                    scaleResolutionDownBy: 2,
+                  ),
+                  RTCRtpEncoding(
+                    rid: 'q',
+                    maxBitrate: 45 * 1000,
+                    maxFramerate: 8,
+                    scaleResolutionDownBy: 4,
+                  ),
+                ]
+              : null,
         ),
       );
       published.add(<String, dynamic>{
