@@ -39,6 +39,8 @@ class CloudflareSfuService {
 
   final Map<String, _SfuTrackReference> _referencesByMid =
       <String, _SfuTrackReference>{};
+  final Map<String, _SfuTrackReference> _referencesByTrackName =
+      <String, _SfuTrackReference>{};
   final Map<String, MediaStream> _remoteStreams = <String, MediaStream>{};
 
   RTCPeerConnection? _producer;
@@ -168,16 +170,30 @@ class CloudflareSfuService {
     final response = await _call(<String, dynamic>{'action': 'subscribe'});
     final subscriptions = _mapList(response['subscriptions']);
     final nextReferences = <String, _SfuTrackReference>{};
+    final nextTrackNameReferences = <String, _SfuTrackReference>{};
     for (final subscription in subscriptions) {
       final mid = _requiredString(subscription, 'mid');
-      nextReferences[mid] = _SfuTrackReference(
+      final reference = _SfuTrackReference(
         participantId: _requiredString(subscription, 'participantId'),
         kind: _requiredString(subscription, 'kind'),
       );
+      nextReferences[mid] = reference;
+
+      // Cloudflare uses the published track name as the receiver track ID.
+      // On some native WebRTC builds onTrack fires before transceiver.mid is
+      // populated, so keep this second stable lookup instead of dropping the
+      // teacher's audio/video event.
+      final trackName = subscription['trackName']?.toString();
+      if (trackName != null && trackName.isNotEmpty) {
+        nextTrackNameReferences[trackName] = reference;
+      }
     }
     _referencesByMid
       ..clear()
       ..addAll(nextReferences);
+    _referencesByTrackName
+      ..clear()
+      ..addAll(nextTrackNameReferences);
 
     final activeParticipantIds = nextReferences.values
         .map((reference) => reference.participantId)
@@ -204,11 +220,27 @@ class CloudflareSfuService {
     });
   }
 
-  Future<void> _handleRemoteTrack(RTCTrackEvent event) async {
+  Future<void> _handleRemoteTrack(
+    RTCTrackEvent event, {
+    int retryCount = 0,
+  }) async {
     if (_closed) return;
     final mid = event.transceiver?.mid;
-    final reference = mid == null ? null : _referencesByMid[mid];
-    if (reference == null) return;
+    final trackId = event.track.id;
+    final reference = (mid == null ? null : _referencesByMid[mid]) ??
+        (trackId == null ? null : _referencesByTrackName[trackId]);
+    if (reference == null) {
+      // Native Unified Plan can deliver onTrack just before it exposes the
+      // transceiver MID. Give that metadata (and a concurrent subscription
+      // refresh) a brief chance to settle rather than losing the event.
+      if (retryCount < 10) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        if (!_closed) {
+          await _handleRemoteTrack(event, retryCount: retryCount + 1);
+        }
+      }
+      return;
+    }
 
     var stream = _remoteStreams[reference.participantId];
     if (stream == null) {
@@ -221,7 +253,6 @@ class CloudflareSfuService {
       }
       _remoteStreams[reference.participantId] = stream;
     }
-    final trackId = event.track.id;
     if (trackId == null || trackId.isEmpty) return;
     if (stream.getTrackById(trackId) == null) {
       await stream.addTrack(event.track);
@@ -277,6 +308,7 @@ class CloudflareSfuService {
     }
     _remoteStreams.clear();
     _referencesByMid.clear();
+    _referencesByTrackName.clear();
   }
 
   Future<Map<String, dynamic>> _call(Map<String, dynamic> data) async {
