@@ -278,9 +278,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     _localParticipantId = _buildLocalParticipantId();
     _localParticipantName = _buildLocalParticipantName();
     _connectionId = _buildConnectionId();
-    // Students join muted to prevent many microphones and echo paths from
-    // competing with the teacher's audio as a large class joins at once.
-    _isMicMuted = !widget.isTeacher;
+    // Both teachers and students join ready to speak. The microphone control
+    // remains available when a participant wants to mute after joining.
+    _isMicMuted = false;
     _callStartedAt = DateTime.now();
     _localStream = widget.initialLocalStream;
     _statusMessage = widget.isTeacher
@@ -2217,7 +2217,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         await _mediaRecorder!.startWithMixedAudio(
           _localVideoPath!,
           videoTrack: videoTrack,
-          useFallbackAudio: true,
+          // WebRTC already owns the microphone while a class is live. Starting
+          // a second Android AudioRecord can interrupt that input on some
+          // devices, silencing both the call and the saved recording.
+          useFallbackAudio: false,
         );
       } else {
         await _mediaRecorder!.start(

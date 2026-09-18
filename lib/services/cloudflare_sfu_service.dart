@@ -254,6 +254,11 @@ class CloudflareSfuService {
       _remoteStreams[reference.participantId] = stream;
     }
     if (trackId == null || trackId.isEmpty) return;
+    if (reference.kind == 'audio') {
+      // Some native WebRTC implementations deliver subscribed audio tracks in
+      // a disabled state until the application explicitly enables them.
+      event.track.enabled = true;
+    }
     if (stream.getTrackById(trackId) == null) {
       await stream.addTrack(event.track);
     }

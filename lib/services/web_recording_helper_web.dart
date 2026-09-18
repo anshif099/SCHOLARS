@@ -89,6 +89,10 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
         final audioContext = web.AudioContext();
         _audioContext = audioContext;
 
+        // A suspended Web Audio graph produces a valid video with silent
+        // audio. Recording starts from a user tap, so resume it immediately.
+        audioContext.resume();
+
         final destination = audioContext.createMediaStreamDestination();
         _destination = destination;
 
@@ -105,7 +109,6 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
         if (remoteStreams != null) {
           for (final rs in remoteStreams) {
             if (rs is MediaStreamWeb) {
-              _mixedRemoteStreamIds.add(rs.id);
               final remoteJsStream = rs.jsStream;
               if (remoteJsStream.getAudioTracks().toDart.isNotEmpty) {
                 try {
@@ -114,6 +117,7 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
                   );
                   remoteSource.connect(destination);
                   _sources.add(remoteSource);
+                  _mixedRemoteStreamIds.add(rs.id);
                 } catch (e) {
                   // ignore: avoid_print
                   print('Error mixing initial remote audio stream: $e');
@@ -231,7 +235,7 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
     if (_audioContext != null &&
         _destination != null &&
         stream is MediaStreamWeb) {
-      if (!_mixedRemoteStreamIds.add(stream.id)) {
+      if (_mixedRemoteStreamIds.contains(stream.id)) {
         return;
       }
       final remoteJsStream = stream.jsStream;
@@ -240,6 +244,9 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
           final source = _audioContext!.createMediaStreamSource(remoteJsStream);
           source.connect(_destination!);
           _sources.add(source);
+          // SFU video and audio can arrive in separate onTrack events. Mark a
+          // stream mixed only after its audio track is actually available.
+          _mixedRemoteStreamIds.add(stream.id);
         } catch (e) {
           // ignore: avoid_print
           print('Error adding remote stream dynamically to audio mixer: $e');
