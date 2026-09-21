@@ -13,6 +13,7 @@ class CallManager {
   static StreamSubscription<CallEvent?>? _eventSubscription;
   static void Function(Map<String, dynamic>?)? _onAccept;
   static final Set<String> _handledAcceptedCalls = <String>{};
+  static String? _activeAcceptedCallId;
 
   static Future<void> prepareIncomingCallUi() async {
     if (defaultTargetPlatform != TargetPlatform.android) {
@@ -84,9 +85,9 @@ class CallManager {
         supportsVideo: true,
         maximumCallGroups: 2,
         maximumCallsPerCallGroup: 1,
-        audioSessionMode: 'default',
+        audioSessionMode: 'videoChat',
         audioSessionActive: true,
-        audioSessionPreferredSampleRate: 44100.0,
+        audioSessionPreferredSampleRate: 48000.0,
         audioSessionPreferredIOBufferDuration: 0.005,
         supportsDTMF: true,
         supportsHolding: true,
@@ -127,6 +128,11 @@ class CallManager {
       }
 
       if (callId != null && callId.isNotEmpty) {
+        _activeAcceptedCallId = callId;
+      }
+      if (defaultTargetPlatform != TargetPlatform.iOS &&
+          callId != null &&
+          callId.isNotEmpty) {
         await FlutterCallkitIncoming.endCall(callId);
       }
 
@@ -150,10 +156,29 @@ class CallManager {
     }
 
     if (callId != null && callId.isNotEmpty) {
+      _activeAcceptedCallId = callId;
+    }
+    // Keep the accepted iOS CallKit transaction alive while WebRTC owns the
+    // call. Ending it here deactivates AVAudioSession during room startup and
+    // can leave the student connected with no teacher audio.
+    if (defaultTargetPlatform != TargetPlatform.iOS &&
+        callId != null &&
+        callId.isNotEmpty) {
       unawaited(FlutterCallkitIncoming.endCall(callId));
     }
 
     _onAccept?.call(extra);
+  }
+
+  static Future<void> endAcceptedCall() async {
+    final callId = _activeAcceptedCallId;
+    _activeAcceptedCallId = null;
+    if (callId == null || callId.isEmpty) return;
+    try {
+      await FlutterCallkitIncoming.endCall(callId);
+    } catch (_) {
+      // The native call may already have ended; room cleanup must continue.
+    }
   }
 
   static bool _markAcceptedCallHandled(

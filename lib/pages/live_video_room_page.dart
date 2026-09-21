@@ -20,6 +20,7 @@ import '../services/web_recording_helper.dart';
 
 import '../services/firebase_upload_auth_service.dart';
 import '../services/cloudflare_sfu_service.dart';
+import '../services/call_manager.dart';
 import '../services/live_class_lifecycle_policy.dart';
 import '../services/live_class_media_policy.dart';
 import '../services/permission_service.dart';
@@ -393,6 +394,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       }
 
       await _setupLocalMedia();
+
+      if (WebRTC.platformIsIOS) {
+        // getUserMedia and CallKit can both change AVAudioSession. Reassert the
+        // WebRTC play-and-record session after capture has actually started.
+        await Helper.ensureAudioSession();
+      }
 
       if (!widget.isTeacher) {
         // A returning student reuses the same participant ID. Remove the old
@@ -1990,6 +1997,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       return;
     }
 
+    if (WebRTC.platformIsIOS) {
+      await Helper.ensureAudioSession();
+    }
+
     for (final renderer in _remoteRenderers.values) {
       final stream = renderer.srcObject;
       for (final audioTrack
@@ -3150,6 +3161,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         await sfuService.close();
       }
       _usingCloudflareSfu = false;
+      await CallManager.endAcceptedCall();
 
       // 2. Remove room state from database
       if (shouldMutateRoom) {

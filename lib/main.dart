@@ -43,7 +43,9 @@ void main() async {
       options: DefaultFirebaseOptions.currentPlatform,
     );
     if (!kIsWeb) {
-      FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+      FirebaseMessaging.onBackgroundMessage(
+        _firebaseMessagingBackgroundHandler,
+      );
     }
   } catch (e) {
     debugPrint("Firebase initialization failed: $e");
@@ -67,19 +69,16 @@ void main() async {
     debugPrint("Wakelock enabling failed: $e");
   }
 
-  await SentryFlutter.init(
-    (options) {
-      options.dsn =
-          'https://0f2e175f3c41f66ad597dceb81e2b5c0@o4511873274150912.ingest.us.sentry.io/4511873280638976';
-      // Capture 100% of transactions for performance monitoring.
-      // Reduce this in production to a lower value (e.g. 0.2).
-      options.tracesSampleRate = 1.0;
-      // Profiling sample rate relative to tracesSampleRate.
-      // Reduce in production to avoid overhead.
-      options.profilesSampleRate = 1.0;
-    },
-    appRunner: () => runApp(const ScholarsApp()),
-  );
+  await SentryFlutter.init((options) {
+    options.dsn =
+        'https://0f2e175f3c41f66ad597dceb81e2b5c0@o4511873274150912.ingest.us.sentry.io/4511873280638976';
+    // Capture 100% of transactions for performance monitoring.
+    // Reduce this in production to a lower value (e.g. 0.2).
+    options.tracesSampleRate = 1.0;
+    // Profiling sample rate relative to tracesSampleRate.
+    // Reduce in production to avoid overhead.
+    options.profilesSampleRate = 1.0;
+  }, appRunner: () => runApp(const ScholarsApp()));
 }
 
 /// Global navigator key so call-acceptance navigation works reliably
@@ -119,7 +118,7 @@ class _AuthGateState extends State<_AuthGate> {
   void initState() {
     super.initState();
     _checkLoginState();
-    
+
     CallNotificationService.init();
 
     if (!kIsWeb) {
@@ -127,7 +126,9 @@ class _AuthGateState extends State<_AuthGate> {
         unawaited(_openIncomingClass(extra));
       });
 
-      FirebaseMessaging.onMessageOpenedApp.listen(_openIncomingClassFromMessage);
+      FirebaseMessaging.onMessageOpenedApp.listen(
+        _openIncomingClassFromMessage,
+      );
     }
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -206,11 +207,14 @@ class _AuthGateState extends State<_AuthGate> {
               final classId = Uri.base.queryParameters['classId'];
               final topic = Uri.base.queryParameters['topic'] ?? 'Live Class';
               if (classId != null && classId.isNotEmpty) {
-                unawaited(_openIncomingClass(<String, dynamic>{
-                  'classId': classId,
-                  'topic': topic,
-                  'startedAt': DateTime.now().millisecondsSinceEpoch.toString(),
-                }));
+                unawaited(
+                  _openIncomingClass(<String, dynamic>{
+                    'classId': classId,
+                    'topic': topic,
+                    'startedAt': DateTime.now().millisecondsSinceEpoch
+                        .toString(),
+                  }),
+                );
               }
             }
             return;
@@ -295,19 +299,23 @@ class _AuthGateState extends State<_AuthGate> {
     final liveKey = startedAt == null || startedAt.isEmpty
         ? classId
         : '$classId:$startedAt';
-    if (!_openedLiveClassKeys.add(liveKey)) {
+    if (_openedLiveClassKeys.contains(liveKey)) {
       return;
     }
 
     final studentIdentity = await _loadCurrentStudentIdentity();
 
-    if (!mounted) {
-      return;
+    // A CallKit accept can arrive while a cold-started app is still restoring
+    // login state. Wait for the navigator instead of consuming the call and
+    // silently dropping the only accept event.
+    while (mounted && (!_loginCheckDone || navigatorKey.currentState == null)) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
     }
+    if (!mounted) return;
 
-    // Use the global navigator key for reliable navigation
     final nav = navigatorKey.currentState;
     if (nav == null) return;
+    if (!_openedLiveClassKeys.add(liveKey)) return;
 
     nav.push(
       MaterialPageRoute(

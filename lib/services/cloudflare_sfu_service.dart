@@ -42,10 +42,13 @@ class CloudflareSfuService {
   final Map<String, _SfuTrackReference> _referencesByTrackName =
       <String, _SfuTrackReference>{};
   final Map<String, MediaStream> _remoteStreams = <String, MediaStream>{};
+  final List<_PendingRemoteTrack> _pendingRemoteTracks =
+      <_PendingRemoteTrack>[];
 
   RTCPeerConnection? _producer;
   RTCPeerConnection? _consumer;
   Future<void>? _subscriptionTask;
+  Timer? _pendingTrackRetryTimer;
   bool _subscriptionSyncRequested = false;
   bool _closed = false;
   bool _connectionLostReported = false;
@@ -195,6 +198,8 @@ class CloudflareSfuService {
       ..clear()
       ..addAll(nextTrackNameReferences);
 
+    await _drainPendingRemoteTracks();
+
     final activeParticipantIds = nextReferences.values
         .map((reference) => reference.participantId)
         .toSet();
@@ -227,7 +232,8 @@ class CloudflareSfuService {
     if (_closed) return;
     final mid = event.transceiver?.mid;
     final trackId = event.track.id;
-    final reference = (mid == null ? null : _referencesByMid[mid]) ??
+    final reference =
+        (mid == null ? null : _referencesByMid[mid]) ??
         (trackId == null ? null : _referencesByTrackName[trackId]);
     if (reference == null) {
       // Native Unified Plan can deliver onTrack just before it exposes the
@@ -238,6 +244,20 @@ class CloudflareSfuService {
         if (!_closed) {
           await _handleRemoteTrack(event, retryCount: retryCount + 1);
         }
+      } else if (!_pendingRemoteTracks.any(
+        (pending) => identical(pending.event.track, event.track),
+      )) {
+        // A busy native device can emit onTrack well before it exposes the MID
+        // or before a later subscription batch returns its metadata. Retain
+        // the one-shot event and retry it after every subscription refresh.
+        // Without this queue, teacher audio could be lost for the whole call.
+        _pendingRemoteTracks.add(
+          _PendingRemoteTrack(event: event, queuedAt: DateTime.now()),
+        );
+        if (_pendingRemoteTracks.length > 128) {
+          _pendingRemoteTracks.removeAt(0);
+        }
+        _schedulePendingTrackRetry();
       }
       return;
     }
@@ -269,6 +289,41 @@ class CloudflareSfuService {
     );
   }
 
+  Future<void> _drainPendingRemoteTracks() async {
+    _pendingTrackRetryTimer?.cancel();
+    _pendingTrackRetryTimer = null;
+    if (_pendingRemoteTracks.isEmpty || _closed) return;
+    final pending = List<_PendingRemoteTrack>.from(_pendingRemoteTracks);
+    _pendingRemoteTracks.clear();
+    final expiry = DateTime.now().subtract(const Duration(seconds: 30));
+    for (final item in pending) {
+      if (_closed) return;
+      if (item.queuedAt.isBefore(expiry)) continue;
+      final event = item.event;
+      final mid = event.transceiver?.mid;
+      final trackId = event.track.id;
+      final canResolve =
+          (mid != null && _referencesByMid.containsKey(mid)) ||
+          (trackId != null && _referencesByTrackName.containsKey(trackId));
+      if (canResolve) {
+        await _handleRemoteTrack(event);
+      } else {
+        _pendingRemoteTracks.add(item);
+      }
+    }
+    if (_pendingRemoteTracks.isNotEmpty) {
+      _schedulePendingTrackRetry();
+    }
+  }
+
+  void _schedulePendingTrackRetry() {
+    if (_closed || _pendingTrackRetryTimer?.isActive == true) return;
+    _pendingTrackRetryTimer = Timer(const Duration(milliseconds: 500), () {
+      _pendingTrackRetryTimer = null;
+      unawaited(_drainPendingRemoteTracks());
+    });
+  }
+
   void _watchConnection(RTCPeerConnection connection) {
     connection.onConnectionState = (state) {
       if (_closed || _connectionLostReported) return;
@@ -290,6 +345,8 @@ class CloudflareSfuService {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    _pendingTrackRetryTimer?.cancel();
+    _pendingTrackRetryTimer = null;
     final subscriptionTask = _subscriptionTask;
     if (subscriptionTask != null) {
       try {
@@ -314,6 +371,7 @@ class CloudflareSfuService {
     _remoteStreams.clear();
     _referencesByMid.clear();
     _referencesByTrackName.clear();
+    _pendingRemoteTracks.clear();
   }
 
   Future<Map<String, dynamic>> _call(Map<String, dynamic> data) async {
@@ -387,4 +445,11 @@ class _SfuTrackReference {
 
   final String participantId;
   final String kind;
+}
+
+class _PendingRemoteTrack {
+  const _PendingRemoteTrack({required this.event, required this.queuedAt});
+
+  final RTCTrackEvent event;
+  final DateTime queuedAt;
 }

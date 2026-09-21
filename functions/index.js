@@ -315,7 +315,16 @@ function selectSfuPublications(allSessions, activeParticipants, current) {
   const candidates = Object.entries(allSessions || {})
     .filter(([participantId, value]) => {
       const presence = activeParticipants && activeParticipants[participantId];
-      return participantId !== current.participantId &&
+      const remoteRole = value && value.role;
+      // The classroom UI is teacher-centric: teachers need every student's
+      // media for the participant grid, while students only render/listen to
+      // the teacher. Subscribing every student to every other student grows
+      // quadratically and overloaded phones at roughly 9-11 participants.
+      const roleIsNeeded = current.role === "teacher"
+        ? remoteRole === "student"
+        : remoteRole === "teacher";
+      return roleIsNeeded &&
+        participantId !== current.participantId &&
         value &&
         value.connection_id &&
         value.publications &&
@@ -328,9 +337,9 @@ function selectSfuPublications(allSessions, activeParticipants, current) {
     if (right.role === "teacher" && left.role !== "teacher") return 1;
     return left.participantId.localeCompare(right.participantId);
   });
-  // Everyone receives every participant, but non-teacher cameras use the
-  // thumbnail simulcast layer. This preserves group-call behavior without
-  // downloading 29 full-resolution feeds on each phone.
+  // Teachers receive student thumbnails; each student receives only the
+  // teacher. This keeps per-student receive bandwidth constant as the class
+  // grows while preserving the teacher's participant grid.
   const selected = candidates;
   return selected.flatMap((session) =>
     Object.values(session.publications || {})
