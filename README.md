@@ -18,10 +18,10 @@ flutter build apk --release `
 ```
 
 Use short-lived TURN credentials from your relay provider in CI/release builds;
-do not commit credentials to this repository. If any of the three values are
-missing, the app falls back to STUN-only connectivity, which can remain stuck
-on Connecting on carrier networks. Check the actual release build's dart
-defines when investigating this symptom.
+do not commit credentials to this repository. Set all three variables for the
+Vercel Production environment and redeploy. The Vercel build now fails if one
+is missing, because a STUN-only deployment can remain stuck on Connecting on
+carrier networks. Local Flutter builds still use STUN when TURN is omitted.
 
 Recording uploads require Firebase Storage on the active project, Anonymous
 Authentication enabled, and the deployed `storage.rules` in this repository.
