@@ -19,7 +19,6 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../services/web_recording_helper.dart';
 
 import '../services/firebase_upload_auth_service.dart';
-import '../services/cloudflare_sfu_service.dart';
 import '../services/call_manager.dart';
 import '../services/live_class_lifecycle_policy.dart';
 import '../services/live_class_media_policy.dart';
@@ -118,7 +117,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   StreamSubscription<DatabaseEvent>? _participantsSub;
   StreamSubscription<DatabaseEvent>? _classStatusSub;
   StreamSubscription<DatabaseEvent>? _firebaseConnectionSub;
-  StreamSubscription<DatabaseEvent>? _sfuPublicationsSub;
 
   bool _isInitializing = true;
   bool _isMicMuted = false;
@@ -157,9 +155,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   bool _connectivityRecoveryInProgress = false;
   bool _presenceRefreshInProgress = false;
   bool _mediaTransportInitialized = false;
-  bool _usingCloudflareSfu = false;
-  bool _sfuRestartInProgress = false;
-  CloudflareSfuService? _sfuService;
   RTCPeerConnection? _loopbackConnectionA;
   RTCPeerConnection? _loopbackConnectionB;
   dynamic _webRecordedBlob;
@@ -230,7 +225,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
   DatabaseReference get _webrtcRef => _liveClassRef.child('webrtc');
 
-  DatabaseReference get _sfuRef => _liveClassRef.child('sfu');
 
   String get _localRole => widget.isTeacher ? 'teacher' : 'student';
 
@@ -690,13 +684,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         if (!_mediaTransportInitialized) {
           return;
         }
-        if (_usingCloudflareSfu) {
-          final sfuService = _sfuService;
-          if (sfuService != null) {
-            unawaited(_syncCloudflareSubscriptions());
-            unawaited(_applyCloudflareOutgoingVideoLimits());
-          }
-        } else if (widget.isTeacher) {
+        if (widget.isTeacher) {
           unawaited(_syncTeacherStudentPeers(participants));
         } else {
           unawaited(_enforceStudentTeacherOnlyTopology());
@@ -2418,11 +2406,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       return;
     }
 
-    if (_usingCloudflareSfu) {
-      await _restartCloudflareSfu();
-      return;
-    }
-
     if (manual) {
       _studentReconnectAttempts = 0;
     }
@@ -3126,15 +3109,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       _classStatusSub = null;
       await _firebaseConnectionSub?.cancel();
       _firebaseConnectionSub = null;
-      await _sfuPublicationsSub?.cancel();
-      _sfuPublicationsSub = null;
-
-      final sfuService = _sfuService;
-      _sfuService = null;
-      if (sfuService != null) {
-        await sfuService.close();
-      }
-      _usingCloudflareSfu = false;
       await CallManager.endAcceptedCall();
 
       // 2. Remove room state from database
@@ -3254,14 +3228,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
   String? get _teacherRemotePeerId {
     if (widget.isTeacher) return null;
-    if (!_usingCloudflareSfu) return _localParticipantId;
-    for (final participant in _participants) {
-      if (participant['role'] == 'teacher') {
-        final id = participant['id']?.toString();
-        if (id != null && id.isNotEmpty) return id;
-      }
-    }
-    return null;
+    return _localParticipantId;
   }
 
   bool _isTeacherRemotePeer(String peerId) {
