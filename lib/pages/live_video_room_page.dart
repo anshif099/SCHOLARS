@@ -3087,18 +3087,19 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     return !widget.isTeacher && peerId == _teacherRemotePeerId;
   }
 
-  List<MapEntry<String, RTCVideoRenderer>> get _connectedRemoteRenderers {
+  // Mount the video element as soon as a stream arrives. On web, waiting for
+  // onFirstFrameRendered before mounting the view prevents that event forever.
+  List<MapEntry<String, RTCVideoRenderer>> get _attachedRemoteRenderers {
     return _remoteRenderers.entries
         .where(
           (entry) =>
-              entry.value.srcObject != null &&
-              _remotePeersWithFirstFrame.contains(entry.key),
+              entry.value.srcObject != null,
         )
         .toList();
   }
 
   String? get _firstConnectedRemotePeerId {
-    final connected = _connectedRemoteRenderers;
+    final connected = _attachedRemoteRenderers;
     if (connected.isEmpty) {
       return null;
     }
@@ -3724,9 +3725,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       final teacherRenderer = teacherPeerId == null
           ? null
           : _remoteRenderers[teacherPeerId];
-      if (teacherRenderer?.srcObject != null &&
-          teacherPeerId != null &&
-          _remotePeersWithFirstFrame.contains(teacherPeerId)) {
+      if (teacherRenderer?.srcObject != null) {
         return ColoredBox(
           color: Colors.black,
           child: RTCVideoView(
@@ -3743,7 +3742,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       return _buildLocalVideoView(expanded: true);
     }
 
-    if (_isRemoteConnected) {
+    if (_attachedRemoteRenderers.isNotEmpty) {
       return _buildRemoteVideoArea();
     }
 
@@ -5301,7 +5300,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       );
     }
 
-    for (final entry in _connectedRemoteRenderers) {
+    for (final entry in _attachedRemoteRenderers) {
       items.add(
         _buildVideoStripItem(_remoteParticipantName(entry.key), entry.value),
       );
@@ -5378,7 +5377,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       return _buildLocalVideoView(expanded: false);
     }
 
-    if (_isRemoteConnected) {
+    if (_attachedRemoteRenderers.isNotEmpty) {
       return _buildRemoteThumbnail();
     }
 
@@ -5392,7 +5391,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   Widget _buildRemoteVideoArea() {
-    final connectedRenderers = _connectedRemoteRenderers;
+    final connectedRenderers = _attachedRemoteRenderers;
     if (connectedRenderers.isEmpty) {
       return _buildRemotePlaceholder();
     }
@@ -5486,7 +5485,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   MapEntry<String, RTCVideoRenderer>? get _focusedRemoteEntry {
-    final connectedRenderers = _connectedRemoteRenderers;
+    final connectedRenderers = _attachedRemoteRenderers;
     if (connectedRenderers.isEmpty) {
       return null;
     }

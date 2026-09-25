@@ -59,6 +59,7 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
   Timer? _audioRetryTimer;
 
   bool _audioPlayInProgress = false;
+  bool _firstFrameReported = false;
 
   String _objectFit = 'contain';
 
@@ -221,6 +222,13 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
       height: element.videoHeight.toDouble(),
       renderVideo: renderVideo,
     );
+    if (!_firstFrameReported &&
+        renderVideo &&
+        element.videoWidth > 0 &&
+        element.videoHeight > 0) {
+      _firstFrameReported = true;
+      onFirstFrameRendered?.call();
+    }
   }
 
   @override
@@ -228,6 +236,9 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
 
   @override
   set srcObject(MediaStream? stream) {
+    if (stream == null || stream.id != _srcObject?.id) {
+      _firstFrameReported = false;
+    }
     if (stream == null) {
       findHtmlView()?.srcObject = null;
       _audioElement?.srcObject = null;
@@ -280,6 +291,9 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
   }
 
   Future<void> setSrcObject({MediaStream? stream, String? trackId}) async {
+    if (stream == null || stream.id != _srcObject?.id) {
+      _firstFrameReported = false;
+    }
     if (stream == null) {
       findHtmlView()?.srcObject = null;
       _audioElement?.srcObject = null;
@@ -409,6 +423,12 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
 
       _applyDefaultVideoStyles(element);
       unawaited(_tryPlayVideo(element));
+
+      _subscriptions.add(
+        element.onLoadedData.listen((dynamic _) {
+          _updateAllValues(element);
+        }),
+      );
 
       _subscriptions.add(
         element.onCanPlay.listen((dynamic _) {
