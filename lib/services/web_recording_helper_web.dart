@@ -244,7 +244,7 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
           final source = _audioContext!.createMediaStreamSource(remoteJsStream);
           source.connect(_destination!);
           _sources.add(source);
-          // SFU video and audio can arrive in separate onTrack events. Mark a
+          // Video and audio can arrive in separate onTrack events. Mark a
           // stream mixed only after its audio track is actually available.
           _mixedRemoteStreamIds.add(stream.id);
         } catch (e) {
