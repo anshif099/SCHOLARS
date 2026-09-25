@@ -1614,16 +1614,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
               : (widget.isTeacher
                     ? 'Student video did not arrive.'
                     : 'Teacher media did not arrive. Reconnecting...');
-          if (!session.hasReceivedMedia &&
-              !widget.isTeacher &&
-              _isTeacherRemotePeer(peerId)) {
+          if (!widget.isTeacher && _isTeacherRemotePeer(peerId)) {
             _showStudentReconnectAction = true;
           }
         });
       }
-      if (!session.hasReceivedMedia &&
-          !widget.isTeacher &&
-          _isTeacherRemotePeer(peerId)) {
+      if (!widget.isTeacher && _isTeacherRemotePeer(peerId)) {
         _scheduleStudentReconnect();
       }
     });
@@ -3056,8 +3052,17 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     final teacherPeerId = _teacherRemotePeerId;
     if (teacherPeerId == null) return false;
     final session = _peerSessions[teacherPeerId];
-    return session?.transportConnected == true ||
-        session?.hasReceivedMedia == true;
+    // ICE can report connected while the remote video never renders. Keep the
+    // retry path active until a frame actually reaches the student's screen.
+    final teacherVideoOff = _participants.any(
+      (participant) =>
+          participant['role'] == 'teacher' &&
+          participant['video_enabled'] == false,
+    );
+    if (teacherVideoOff) {
+      return session?.hasReceivedAudio == true;
+    }
+    return _remotePeersWithFirstFrame.contains(teacherPeerId);
   }
 
   String? get _teacherRemotePeerId {
