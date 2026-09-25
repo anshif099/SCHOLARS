@@ -26,9 +26,8 @@ void main() {
     // Verify that the landing page renders with the app name
     expect(find.text('Scholars Academy'), findsOneWidget);
 
-    // Verify the three login options are present
-    expect(find.text('Admin Login'), findsOneWidget);
-    expect(find.text('Teacher Login'), findsOneWidget);
-    expect(find.text('Student Login'), findsOneWidget);
+    // The shared ID/email form handles admin, teacher, and student sign-in.
+    expect(find.text('Enter your ID or Email to continue'), findsOneWidget);
+    expect(find.text('Login ID or Email'), findsOneWidget);
   });
 }

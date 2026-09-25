@@ -1170,46 +1170,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   Future<void> _initializeMediaTransport() async {
-    CloudflareSfuService? candidate;
-    try {
-      final userId = await FirebaseUploadAuthService.ensureSignedIn();
-      if (userId == null) {
-        throw StateError('Firebase authentication is unavailable.');
-      }
-      final service = _createCloudflareSfuService();
-      candidate = service;
-      await service.start();
-      if (_hasEndedCall || _isCleaningUp) {
-        await service.close();
-        return;
-      }
-      _sfuService = service;
-      _usingCloudflareSfu = true;
-      _listenToCloudflarePublications();
-      await _applyCloudflareOutgoingVideoLimits();
-      unawaited(_syncCloudflareSubscriptions());
-      debugPrint('Live class media transport: Cloudflare Realtime SFU');
-    } catch (error, stackTrace) {
-      _reportNonFatalError(
-        'start Cloudflare SFU; using teacher-student fallback',
-        error,
-        stackTrace,
-      );
-      await candidate?.close();
-      if (!identical(candidate, _sfuService)) {
-        await _sfuService?.close();
-      }
-      _sfuService = null;
-      _usingCloudflareSfu = false;
-    } finally {
-      _mediaTransportInitialized = true;
-    }
-
-    if (!_usingCloudflareSfu) {
-      _listenForSignaling();
-      if (widget.isTeacher) {
-        unawaited(_syncTeacherStudentPeers(_participants));
-      }
+    // Firebase Realtime Database carries one offer/answer/ICE exchange per
+    // student. Media flows only between that student and the teacher.
+    _mediaTransportInitialized = true;
+    _listenForSignaling();
+    if (widget.isTeacher) {
+      unawaited(_syncTeacherStudentPeers(_participants));
     }
   }
 
@@ -2785,13 +2751,17 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
         if (progress >= lastPublishedProgress + 5 || progress == 100) {
           lastPublishedProgress = progress;
-          pendingProgressUpdate = pendingProgressUpdate.then(
-            (_) => updateRecordedClass(<String, dynamic>{
-              'upload_status': 'uploading',
-              'upload_progress': progress,
-              'upload_updated_at': DateTime.now().millisecondsSinceEpoch,
-            }),
-          );
+          pendingProgressUpdate = pendingProgressUpdate
+              .catchError((Object error) {
+                debugPrint('Recording progress update failed: $error');
+              })
+              .then(
+                (_) => updateRecordedClass(<String, dynamic>{
+                  'upload_status': 'uploading',
+                  'upload_progress': progress,
+                  'upload_updated_at': DateTime.now().millisecondsSinceEpoch,
+                }),
+              );
         }
       });
 
@@ -2801,7 +2771,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         await progressSubscription.cancel();
         // Finish queued progress writes before the caller writes the final
         // ready/failed state, otherwise a late "uploading" update can win.
-        await pendingProgressUpdate;
+        try {
+          await pendingProgressUpdate;
+        } catch (error) {
+          debugPrint('Recording progress update failed: $error');
+        }
       }
     }
 
