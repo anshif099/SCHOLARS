@@ -28,6 +28,7 @@ import '../components/web_pdf_page_view.dart';
 import '../components/drawing_overlay.dart';
 import '../services/web_pdf_renderer.dart';
 import '../services/webrtc_ice_server_config.dart';
+import '../services/live_class_ice_service.dart';
 
 class LiveVideoRoomPage extends StatefulWidget {
   static final Set<String> _activeSessionKeys = <String>{};
@@ -102,6 +103,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   final Map<String, Timer> _remoteFirstFrameTimers = <String, Timer>{};
   final Map<String, _PeerSession> _peerSessions = <String, _PeerSession>{};
   final Set<String> _teacherPeerStartInProgress = <String>{};
+  List<Map<String, dynamic>>? _iceServers;
   final Map<String, dynamic> _sdpConstraints = <String, dynamic>{
     'mandatory': <String, dynamic>{
       'OfferToReceiveAudio': true,
@@ -258,7 +260,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   Map<String, dynamic> get _rtcConfiguration => <String, dynamic>{
-    'iceServers': buildWebRtcIceServers(),
+    'iceServers': _iceServers ?? buildWebRtcIceServers(),
     'sdpSemantics': 'unified-plan',
     'iceTransportPolicy': 'all',
     'bundlePolicy': 'max-bundle',
@@ -412,6 +414,13 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       await _registerParticipant();
       _startParticipantHeartbeat();
       _listenForFirebaseConnectionChanges();
+      if (widget.isTeacher) {
+        await _markTeacherClassLive();
+      }
+      _iceServers = await LiveClassIceService.load(
+        classId: widget.classId,
+        participantId: _localParticipantId,
+      );
       await _initializeMediaTransport();
       if (!widget.isTeacher) {
         _listenForClassStatus();
@@ -419,7 +428,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       _listenForSharedWhiteboard();
 
       if (widget.isTeacher) {
-        await _markTeacherClassLive();
         _updateStatus('Waiting for students to join...');
       } else {
         _updateStatus('Connecting to ${widget.topic}...');
@@ -437,6 +445,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
   String _friendlyCallStartError(Object error) {
     final normalized = error.toString().toLowerCase();
+    if (normalized.contains('getliveclassiceservers') ||
+        normalized.contains('video relay') ||
+        normalized.contains('cloud_functions')) {
+      return 'Video relay is unavailable. Check the Cloudflare TURN function and try again.';
+    }
     if (normalized.contains('notallowederror') ||
         normalized.contains('permission') ||
         normalized.contains('denied')) {

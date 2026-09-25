@@ -19,22 +19,15 @@ echo "=== Enabling Web Support ==="
 flutter config --enable-web
 
 echo "=== Building Flutter Web Project ==="
-if [ -z "${WEBRTC_TURN_URLS:-}" ] || [ -z "${WEBRTC_TURN_USERNAME:-}" ] || [ -z "${WEBRTC_TURN_CREDENTIAL:-}" ]; then
-  echo "=== ERROR: Live video requires WEBRTC_TURN_URLS, WEBRTC_TURN_USERNAME, and WEBRTC_TURN_CREDENTIAL in Vercel Production environment variables ===" >&2
-  exit 1
+TURN_ARGS=()
+if [ -n "${WEBRTC_TURN_URLS:-}" ] && [ -n "${WEBRTC_TURN_USERNAME:-}" ] && [ -n "${WEBRTC_TURN_CREDENTIAL:-}" ]; then
+  TURN_ARGS+=("--dart-define=WEBRTC_TURN_URLS=${WEBRTC_TURN_URLS}")
+  TURN_ARGS+=("--dart-define=WEBRTC_TURN_USERNAME=${WEBRTC_TURN_USERNAME}")
+  TURN_ARGS+=("--dart-define=WEBRTC_TURN_CREDENTIAL=${WEBRTC_TURN_CREDENTIAL}")
+  echo "=== Static TURN relay configuration enabled ==="
+else
+  echo "=== Cloudflare TURN credentials will be requested at call time ==="
 fi
-
-if [[ ! "${WEBRTC_TURN_URLS}" =~ ^turns?: ]]; then
-  echo "=== ERROR: WEBRTC_TURN_URLS must begin with turn: or turns: ===" >&2
-  exit 1
-fi
-
-TURN_ARGS=(
-  "--dart-define=WEBRTC_TURN_URLS=${WEBRTC_TURN_URLS}"
-  "--dart-define=WEBRTC_TURN_USERNAME=${WEBRTC_TURN_USERNAME}"
-  "--dart-define=WEBRTC_TURN_CREDENTIAL=${WEBRTC_TURN_CREDENTIAL}"
-)
-echo "=== TURN relay configuration enabled ==="
 
 flutter build web --release "${TURN_ARGS[@]}"
 

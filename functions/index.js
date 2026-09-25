@@ -6,8 +6,62 @@ const {spawn} = require("node:child_process");
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
+const {onCall, HttpsError} = require("firebase-functions/v2/https");
+const {defineSecret} = require("firebase-functions/params");
+
+const cloudflareTurnKeyId = defineSecret("CLOUDFLARE_TURN_KEY_ID");
+const cloudflareTurnApiToken = defineSecret("CLOUDFLARE_TURN_API_TOKEN");
 
 admin.initializeApp();
+
+// Issue fresh relay credentials for each live-call connection. Cloudflare's
+// long-lived TURN key must stay on the server, never in the Flutter web build.
+exports.getLiveClassIceServers = onCall(
+  {
+    secrets: [cloudflareTurnKeyId, cloudflareTurnApiToken],
+    maxInstances: 10,
+  },
+  async (request) => {
+    const classId = String(request.data?.classId || "");
+    const participantId = String(request.data?.participantId || "");
+    if (!request.auth || !/^[A-Za-z0-9_-]{1,128}$/.test(classId) ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(participantId)) {
+      throw new HttpsError("permission-denied", "Invalid live class participant.");
+    }
+
+    const classRef = admin.database().ref(`live_classes/${classId}`);
+    const [liveSnapshot, participantSnapshot] = await Promise.all([
+      classRef.child("is_live").get(),
+      classRef.child(`participants/${participantId}`).get(),
+    ]);
+    if (liveSnapshot.val() !== true || !participantSnapshot.exists()) {
+      throw new HttpsError("permission-denied", "The live class is unavailable.");
+    }
+
+    const response = await fetch(
+      `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(cloudflareTurnKeyId.value())}/credentials/generate-ice-servers`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${cloudflareTurnApiToken.value()}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ttl: 86400}),
+        signal: AbortSignal.timeout(10000),
+      }
+    );
+    if (!response.ok) {
+      logger.error("Cloudflare TURN credential request failed", {status: response.status});
+      throw new HttpsError("unavailable", "Video relay is unavailable.");
+    }
+    const payload = await response.json();
+    if (!Array.isArray(payload.iceServers) ||
+        !payload.iceServers.some((server) => server.username && server.credential)) {
+      throw new HttpsError("unavailable", "Video relay returned no credentials.");
+    }
+    return {iceServers: payload.iceServers};
+  }
+);
 
 const CALL_TYPE = "incoming_class_call";
 const MAX_MULTICAST_TOKENS = 500;

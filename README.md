@@ -6,9 +6,22 @@ Distance-learning application for Scholars Academy.
 
 Live classes use Firebase Realtime Database to exchange WebRTC offers, answers,
 and ICE candidates. Each student connects only to the teacher. Firebase does
-not relay the audio or video. The app always includes STUN discovery. Production builds must also provide
-a TURN relay so teacher/student calls work when the two Android devices are on
-different mobile or Wi-Fi networks:
+not relay the audio or video. The app includes STUN discovery and requests
+short-lived Cloudflare TURN credentials when a live call starts. To enable it,
+create a Cloudflare Realtime TURN key and store its key ID and API token as
+Firebase Functions secrets:
+
+```sh
+firebase functions:secrets:set CLOUDFLARE_TURN_KEY_ID
+firebase functions:secrets:set CLOUDFLARE_TURN_API_TOKEN
+firebase deploy --only functions:getLiveClassIceServers
+```
+
+Enable Firebase Anonymous Authentication for live-call participants. Keep the
+Cloudflare API token in Functions; never put it in Vercel or the Flutter build.
+The Vercel web build no longer needs TURN environment variables. Native builds
+use the same callable function. Existing static TURN configuration remains
+available for another relay provider:
 
 ```powershell
 flutter build apk --release `
@@ -17,11 +30,8 @@ flutter build apk --release `
   --dart-define=WEBRTC_TURN_CREDENTIAL="temporary-password"
 ```
 
-Use short-lived TURN credentials from your relay provider in CI/release builds;
-do not commit credentials to this repository. Set all three variables for the
-Vercel Production environment and redeploy. The Vercel build now fails if one
-is missing, because a STUN-only deployment can remain stuck on Connecting on
-carrier networks. Local Flutter builds still use STUN when TURN is omitted.
+Do not commit TURN credentials to this repository. Without a working relay,
+calls on carrier networks can remain stuck on Connecting.
 
 Recording uploads require Firebase Storage on the active project, Anonymous
 Authentication enabled, and the deployed `storage.rules` in this repository.
