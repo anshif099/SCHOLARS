@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/student_class_access.dart';
 
 import '../services/call_notification_service.dart';
 import '../theme/app_theme.dart';
@@ -65,6 +66,11 @@ class _StudentLoginPageState extends State<StudentLoginPage>
       final studentData = await _findStudentByLoginId(loginId);
 
       if (studentData != null) {
+        if (!await StudentClassAccess.exists(studentData)) {
+          _showError('This class is no longer available.');
+          if (mounted) setState(() => _isLoading = false);
+          return;
+        }
         final prefs = await SharedPreferences.getInstance();
         await prefs.setBool('is_student_logged_in', true);
         await prefs.setString('student_data', studentData['key'].toString());

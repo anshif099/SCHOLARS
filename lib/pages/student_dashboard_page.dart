@@ -19,6 +19,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'note_image_viewer_page.dart';
 import '../services/firebase_upload_auth_service.dart';
+import '../services/student_class_access.dart';
 import '../services/live_class_lifecycle_policy.dart';
 import '../services/recording_playback_policy.dart';
 import '../components/fresh_stream_builder.dart';
@@ -64,6 +65,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   StreamSubscription<DatabaseEvent>? _teachersSub;
   bool _isLoggingOut = false;
   bool _isJoiningLiveCall = false;
+  bool _classDeletionCheckInProgress = false;
 
   bool _isStudentTargeted(Map<dynamic, dynamic> commonClass) {
     final targetType = commonClass['target_type']?.toString();
@@ -93,6 +95,22 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
         .child('teachers')
         .onValue
         .listen((event) {
+          final teacherId = widget.studentData['teacher_id']?.toString();
+          final teachers = event.snapshot.value;
+          final classId = widget.studentData['class_id']?.toString().trim();
+          final classStillListed =
+              teachers is Map &&
+              teachers.values.any(
+                (value) =>
+                    value is Map &&
+                    value['class_id']?.toString().trim() == classId,
+              );
+          if ((teacherId != null &&
+                  teacherId.isNotEmpty &&
+                  (teachers is! Map || !teachers.containsKey(teacherId))) ||
+              ((teacherId == null || teacherId.isEmpty) && !classStillListed)) {
+            unawaited(_logoutIfClassDeleted());
+          }
           if (event.snapshot.value != null) {
             final Map<dynamic, dynamic> map = Map<dynamic, dynamic>.from(
               event.snapshot.value as Map,
@@ -115,6 +133,24 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
             }
           }
         });
+  }
+
+  Future<void> _logoutIfClassDeleted() async {
+    if (_classDeletionCheckInProgress || _isLoggingOut) return;
+    _classDeletionCheckInProgress = true;
+    try {
+      final connection = await FirebaseDatabase.instance
+          .ref('.info/connected')
+          .get();
+      if (connection.value != true) return;
+      if (!await StudentClassAccess.exists(widget.studentData)) {
+        await _logoutStudent();
+      }
+    } catch (error) {
+      debugPrint('Class deletion check failed: $error');
+    } finally {
+      _classDeletionCheckInProgress = false;
+    }
   }
 
   @override
@@ -2630,9 +2666,7 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                                           ),
                                         ),
                                         onPressed: () async {
-                                          if (needsIOSRecordingConversion(
-                                            rc,
-                                          )) {
+                                          if (needsIOSRecordingConversion(rc)) {
                                             await FirebaseDatabase.instance
                                                 .ref()
                                                 .child('recorded_classes')

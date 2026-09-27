@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../components/login_option_card.dart';
 import '../services/call_notification_service.dart';
+import '../services/student_class_access.dart';
 import '../theme/app_theme.dart';
 import 'admin_dashboard_page.dart';
 import 'student_dashboard_page.dart';
@@ -60,24 +61,24 @@ class _LandingPageState extends State<LandingPage>
     _logoScale = Tween<double>(begin: 0.5, end: 1.0).animate(
       CurvedAnimation(parent: _logoController, curve: Curves.easeOutBack),
     );
-    _logoFade = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _logoController, curve: Curves.easeOut),
-    );
+    _logoFade = Tween<double>(
+      begin: 0.0,
+      end: 1.0,
+    ).animate(CurvedAnimation(parent: _logoController, curve: Curves.easeOut));
 
     // Title entrance animation
     _titleController = AnimationController(
       duration: const Duration(milliseconds: 600),
       vsync: this,
     );
-    _titleFade = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _titleController, curve: Curves.easeOut),
-    );
-    _titleSlide = Tween<Offset>(
-      begin: const Offset(0, 0.3),
-      end: Offset.zero,
-    ).animate(
-      CurvedAnimation(parent: _titleController, curve: Curves.easeOutCubic),
-    );
+    _titleFade = Tween<double>(
+      begin: 0.0,
+      end: 1.0,
+    ).animate(CurvedAnimation(parent: _titleController, curve: Curves.easeOut));
+    _titleSlide = Tween<Offset>(begin: const Offset(0, 0.3), end: Offset.zero)
+        .animate(
+          CurvedAnimation(parent: _titleController, curve: Curves.easeOutCubic),
+        );
 
     // Start animations in sequence
     _logoController.forward().then((_) {
@@ -241,8 +242,12 @@ class _LandingPageState extends State<LandingPage>
         // Simulate delay like in AdminLoginPage
         await Future.delayed(const Duration(milliseconds: 800));
 
-        final isAdmin = input.toLowerCase() == _adminEmail.toLowerCase() && password == _adminPassword;
-        final isReviewer = input.toLowerCase() == _reviewerEmail.toLowerCase() && password == _reviewerPassword;
+        final isAdmin =
+            input.toLowerCase() == _adminEmail.toLowerCase() &&
+            password == _adminPassword;
+        final isReviewer =
+            input.toLowerCase() == _reviewerEmail.toLowerCase() &&
+            password == _reviewerPassword;
 
         if (isAdmin || isReviewer) {
           final prefs = await SharedPreferences.getInstance();
@@ -269,7 +274,7 @@ class _LandingPageState extends State<LandingPage>
       } else {
         // Teacher or Student Login
         final normalized = _normalizeLoginId(input);
-        
+
         if (normalized.startsWith('CLS')) {
           // Attempt Teacher Login
           final teacherData = await _findTeacherByClassId(normalized);
@@ -283,7 +288,8 @@ class _LandingPageState extends State<LandingPage>
 
             Navigator.of(context).pushAndRemoveUntil(
               PageRouteBuilder(
-                pageBuilder: (_, _, _) => TeacherDashboardPage(teacherData: teacherData),
+                pageBuilder: (_, _, _) =>
+                    TeacherDashboardPage(teacherData: teacherData),
                 transitionsBuilder: (_, animation, _, child) {
                   return FadeTransition(opacity: animation, child: child);
                 },
@@ -294,16 +300,18 @@ class _LandingPageState extends State<LandingPage>
             return;
           }
         }
-        
+
         // Try Student Login
         final studentData = await _findStudentByLoginId(normalized);
         if (studentData != null) {
+          if (!await StudentClassAccess.exists(studentData)) {
+            _showError('This class is no longer available.');
+            if (mounted) setState(() => _isLoading = false);
+            return;
+          }
           final prefs = await SharedPreferences.getInstance();
           await prefs.setBool('is_student_logged_in', true);
-          await prefs.setString(
-            'student_data',
-            studentData['key'].toString(),
-          );
+          await prefs.setString('student_data', studentData['key'].toString());
 
           final notificationsReady = await _activateNotifications(
             studentData['key'].toString(),
@@ -341,7 +349,8 @@ class _LandingPageState extends State<LandingPage>
 
             Navigator.of(context).pushAndRemoveUntil(
               PageRouteBuilder(
-                pageBuilder: (_, _, _) => TeacherDashboardPage(teacherData: teacherData),
+                pageBuilder: (_, _, _) =>
+                    TeacherDashboardPage(teacherData: teacherData),
                 transitionsBuilder: (_, animation, _, child) {
                   return FadeTransition(opacity: animation, child: child);
                 },
@@ -416,285 +425,301 @@ class _LandingPageState extends State<LandingPage>
             child: SingleChildScrollView(
               physics: const BouncingScrollPhysics(),
               child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24),
-                  child: Column(
-                    children: [
-                      SizedBox(height: screenHeight * 0.06),
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Column(
+                  children: [
+                    SizedBox(height: screenHeight * 0.06),
 
-                      // ── Logo ──
-                      ScaleTransition(
-                        scale: _logoScale,
-                        child: FadeTransition(
-                          opacity: _logoFade,
-                          child: Container(
-                            width: 110,
-                            height: 110,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(28),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: AppColors.primaryNavy
-                                      .withValues(alpha: 0.12),
-                                  blurRadius: 30,
-                                  offset: const Offset(0, 10),
-                                  spreadRadius: 2,
-                                ),
-                              ],
-                            ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(28),
-                              child: Image.asset(
-                                'assets/logo.png',
-                                fit: BoxFit.cover,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-
-                      const SizedBox(height: 20),
-
-                      // ── App Name ──
-                      SlideTransition(
-                        position: _titleSlide,
-                        child: FadeTransition(
-                          opacity: _titleFade,
-                          child: Column(
-                            children: [
-                              Text(
-                                'Scholars Academy',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .headlineLarge
-                                    ?.copyWith(
-                                      fontSize: 26,
-                                      height: 1.2,
-                                    ),
-                                textAlign: TextAlign.center,
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                'Enter your ID or Email to continue',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodyMedium
-                                    ?.copyWith(
-                                      fontSize: 15,
-                                      color: AppColors.textLight,
-                                    ),
-                                textAlign: TextAlign.center,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-
-                      SizedBox(height: screenHeight * 0.04),
-
-                      // ── Universal Login Form ──
-                      Form(
-                        key: _formKey,
+                    // ── Logo ──
+                    ScaleTransition(
+                      scale: _logoScale,
+                      child: FadeTransition(
+                        opacity: _logoFade,
                         child: Container(
+                          width: 110,
+                          height: 110,
                           decoration: BoxDecoration(
-                            color: AppColors.cardBackground,
-                            borderRadius: BorderRadius.circular(20),
+                            borderRadius: BorderRadius.circular(28),
                             boxShadow: [
                               BoxShadow(
-                                color: AppColors.primaryNavy.withValues(alpha: 0.05),
-                                blurRadius: 20,
+                                color: AppColors.primaryNavy.withValues(
+                                  alpha: 0.12,
+                                ),
+                                blurRadius: 30,
                                 offset: const Offset(0, 10),
+                                spreadRadius: 2,
                               ),
                             ],
                           ),
-                          padding: const EdgeInsets.all(24),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Login ID or Email',
-                                style: GoogleFonts.poppins(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w500,
-                                  color: AppColors.primaryNavy,
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              TextFormField(
-                                controller: _loginIdController,
-                                style: GoogleFonts.poppins(fontSize: 15),
-                                textInputAction: _isEmailMode ? TextInputAction.next : TextInputAction.done,
-                                onFieldSubmitted: (_) {
-                                  if (!_isEmailMode) {
-                                    _handleLogin();
-                                  }
-                                },
-                                decoration: InputDecoration(
-                                  hintText: 'e.g. STD-12345 or admin@scholars.com',
-                                  hintStyle: GoogleFonts.poppins(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(28),
+                            child: Image.asset(
+                              'assets/logo.png',
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    // ── App Name ──
+                    SlideTransition(
+                      position: _titleSlide,
+                      child: FadeTransition(
+                        opacity: _titleFade,
+                        child: Column(
+                          children: [
+                            Text(
+                              'Scholars Academy',
+                              style: Theme.of(context).textTheme.headlineLarge
+                                  ?.copyWith(fontSize: 26, height: 1.2),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Enter your ID or Email to continue',
+                              style: Theme.of(context).textTheme.bodyMedium
+                                  ?.copyWith(
+                                    fontSize: 15,
                                     color: AppColors.textLight,
                                   ),
-                                  prefixIcon: Icon(
-                                    Icons.badge_outlined,
-                                    color: AppColors.primaryNavy.withValues(
-                                      alpha: 0.6,
-                                    ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    SizedBox(height: screenHeight * 0.04),
+
+                    // ── Universal Login Form ──
+                    Form(
+                      key: _formKey,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: AppColors.cardBackground,
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [
+                            BoxShadow(
+                              color: AppColors.primaryNavy.withValues(
+                                alpha: 0.05,
+                              ),
+                              blurRadius: 20,
+                              offset: const Offset(0, 10),
+                            ),
+                          ],
+                        ),
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Login ID or Email',
+                              style: GoogleFonts.poppins(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                                color: AppColors.primaryNavy,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            TextFormField(
+                              controller: _loginIdController,
+                              style: GoogleFonts.poppins(fontSize: 15),
+                              textInputAction: _isEmailMode
+                                  ? TextInputAction.next
+                                  : TextInputAction.done,
+                              onFieldSubmitted: (_) {
+                                if (!_isEmailMode) {
+                                  _handleLogin();
+                                }
+                              },
+                              decoration: InputDecoration(
+                                hintText:
+                                    'e.g. STD-12345 or admin@scholars.com',
+                                hintStyle: GoogleFonts.poppins(
+                                  color: AppColors.textLight,
+                                ),
+                                prefixIcon: Icon(
+                                  Icons.badge_outlined,
+                                  color: AppColors.primaryNavy.withValues(
+                                    alpha: 0.6,
                                   ),
-                                  filled: true,
-                                  fillColor: AppColors.background,
-                                  contentPadding: const EdgeInsets.symmetric(
-                                    horizontal: 16,
-                                    vertical: 16,
-                                  ),
-                                  border: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                    borderSide: BorderSide.none,
-                                  ),
-                                  focusedBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                    borderSide: const BorderSide(
-                                      color: AppColors.primaryNavy,
-                                      width: 1.5,
-                                    ),
+                                ),
+                                filled: true,
+                                fillColor: AppColors.background,
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 16,
+                                ),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide.none,
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(
+                                    color: AppColors.primaryNavy,
+                                    width: 1.5,
                                   ),
                                 ),
                               ),
-                              
-                              // Dynamic Password Field
-                              ClipRect(
-                                child: AnimatedSize(
+                            ),
+
+                            // Dynamic Password Field
+                            ClipRect(
+                              child: AnimatedSize(
+                                duration: const Duration(milliseconds: 300),
+                                curve: Curves.easeInOut,
+                                child: AnimatedOpacity(
                                   duration: const Duration(milliseconds: 300),
-                                  curve: Curves.easeInOut,
-                                  child: AnimatedOpacity(
-                                    duration: const Duration(milliseconds: 300),
-                                    opacity: _isEmailMode ? 1.0 : 0.0,
-                                    child: _isEmailMode
-                                        ? Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              const SizedBox(height: 20),
-                                              Text(
-                                                'Password',
-                                                style: GoogleFonts.poppins(
-                                                  fontSize: 14,
-                                                  fontWeight: FontWeight.w500,
-                                                  color: AppColors.primaryNavy,
-                                                ),
+                                  opacity: _isEmailMode ? 1.0 : 0.0,
+                                  child: _isEmailMode
+                                      ? Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            const SizedBox(height: 20),
+                                            Text(
+                                              'Password',
+                                              style: GoogleFonts.poppins(
+                                                fontSize: 14,
+                                                fontWeight: FontWeight.w500,
+                                                color: AppColors.primaryNavy,
                                               ),
-                                              const SizedBox(height: 8),
-                                              TextFormField(
-                                                controller: _passwordController,
-                                                obscureText: _obscurePassword,
-                                                style: GoogleFonts.poppins(fontSize: 15),
-                                                textInputAction: TextInputAction.done,
-                                                onFieldSubmitted: (_) => _handleLogin(),
-                                                decoration: InputDecoration(
-                                                  hintText: '••••••••',
-                                                  hintStyle: GoogleFonts.poppins(
+                                            ),
+                                            const SizedBox(height: 8),
+                                            TextFormField(
+                                              controller: _passwordController,
+                                              obscureText: _obscurePassword,
+                                              style: GoogleFonts.poppins(
+                                                fontSize: 15,
+                                              ),
+                                              textInputAction:
+                                                  TextInputAction.done,
+                                              onFieldSubmitted: (_) =>
+                                                  _handleLogin(),
+                                              decoration: InputDecoration(
+                                                hintText: '••••••••',
+                                                hintStyle: GoogleFonts.poppins(
+                                                  color: AppColors.textLight,
+                                                ),
+                                                prefixIcon: Icon(
+                                                  Icons.lock_outline_rounded,
+                                                  color: AppColors.primaryNavy
+                                                      .withValues(alpha: 0.6),
+                                                ),
+                                                suffixIcon: IconButton(
+                                                  icon: Icon(
+                                                    _obscurePassword
+                                                        ? Icons
+                                                              .visibility_off_outlined
+                                                        : Icons
+                                                              .visibility_outlined,
                                                     color: AppColors.textLight,
                                                   ),
-                                                  prefixIcon: Icon(
-                                                    Icons.lock_outline_rounded,
-                                                    color: AppColors.primaryNavy.withValues(
-                                                      alpha: 0.6,
-                                                    ),
-                                                  ),
-                                                  suffixIcon: IconButton(
-                                                    icon: Icon(
-                                                      _obscurePassword
-                                                          ? Icons.visibility_off_outlined
-                                                          : Icons.visibility_outlined,
-                                                      color: AppColors.textLight,
-                                                    ),
-                                                    onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-                                                  ),
-                                                  filled: true,
-                                                  fillColor: AppColors.background,
-                                                  contentPadding: const EdgeInsets.symmetric(
-                                                    horizontal: 16,
-                                                    vertical: 16,
-                                                  ),
-                                                  border: OutlineInputBorder(
-                                                    borderRadius: BorderRadius.circular(12),
-                                                    borderSide: BorderSide.none,
-                                                  ),
-                                                  focusedBorder: OutlineInputBorder(
-                                                    borderRadius: BorderRadius.circular(12),
-                                                    borderSide: const BorderSide(
-                                                      color: AppColors.primaryNavy,
-                                                      width: 1.5,
-                                                    ),
+                                                  onPressed: () => setState(
+                                                    () => _obscurePassword =
+                                                        !_obscurePassword,
                                                   ),
                                                 ),
+                                                filled: true,
+                                                fillColor: AppColors.background,
+                                                contentPadding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 16,
+                                                      vertical: 16,
+                                                    ),
+                                                border: OutlineInputBorder(
+                                                  borderRadius:
+                                                      BorderRadius.circular(12),
+                                                  borderSide: BorderSide.none,
+                                                ),
+                                                focusedBorder:
+                                                    OutlineInputBorder(
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                            12,
+                                                          ),
+                                                      borderSide:
+                                                          const BorderSide(
+                                                            color: AppColors
+                                                                .primaryNavy,
+                                                            width: 1.5,
+                                                          ),
+                                                    ),
                                               ),
-                                            ],
-                                          )
-                                        : const SizedBox.shrink(),
-                                  ),
-                                ),
-                              ),
-                              
-                              const SizedBox(height: 30),
-                              SizedBox(
-                                width: double.infinity,
-                                height: 54,
-                                child: ElevatedButton(
-                                  onPressed: _isLoading ? null : _handleLogin,
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: AppColors.primaryNavy,
-                                    foregroundColor: Colors.white,
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(14),
-                                    ),
-                                    elevation: 0,
-                                  ),
-                                  child: _isLoading
-                                      ? const SizedBox(
-                                          width: 24,
-                                          height: 24,
-                                          child: CircularProgressIndicator(
-                                            color: Colors.white,
-                                            strokeWidth: 2.5,
-                                          ),
+                                            ),
+                                          ],
                                         )
-                                      : Text(
-                                          'Login to Portal',
-                                          style: GoogleFonts.poppins(
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
+                                      : const SizedBox.shrink(),
                                 ),
                               ),
-                            ],
-                          ),
+                            ),
+
+                            const SizedBox(height: 30),
+                            SizedBox(
+                              width: double.infinity,
+                              height: 54,
+                              child: ElevatedButton(
+                                onPressed: _isLoading ? null : _handleLogin,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.primaryNavy,
+                                  foregroundColor: Colors.white,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                  elevation: 0,
+                                ),
+                                child: _isLoading
+                                    ? const SizedBox(
+                                        width: 24,
+                                        height: 24,
+                                        child: CircularProgressIndicator(
+                                          color: Colors.white,
+                                          strokeWidth: 2.5,
+                                        ),
+                                      )
+                                    : Text(
+                                        'Login to Portal',
+                                        style: GoogleFonts.poppins(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
+                    ),
 
-                      SizedBox(height: screenHeight * 0.04),
+                    SizedBox(height: screenHeight * 0.04),
 
-                      // ── Footer ──
-                      Text(
-                        'Powered by Scholars Academy',
-                        style: GoogleFonts.poppins(
-                          fontSize: 12,
-                          color: AppColors.textLight.withValues(alpha: 0.6),
-                          fontWeight: FontWeight.w400,
-                        ),
+                    // ── Footer ──
+                    Text(
+                      'Powered by Scholars Academy',
+                      style: GoogleFonts.poppins(
+                        fontSize: 12,
+                        color: AppColors.textLight.withValues(alpha: 0.6),
+                        fontWeight: FontWeight.w400,
                       ),
+                    ),
 
-                      const SizedBox(height: 4),
+                    const SizedBox(height: 4),
 
-                      Text(
-                        _appVersion,
-                        style: GoogleFonts.poppins(
-                          fontSize: 11,
-                          color: AppColors.textLight.withValues(alpha: 0.4),
-                        ),
+                    Text(
+                      _appVersion,
+                      style: GoogleFonts.poppins(
+                        fontSize: 11,
+                        color: AppColors.textLight.withValues(alpha: 0.4),
                       ),
+                    ),
 
-                      const SizedBox(height: 24),
-                    ],
-                  ),
+                    const SizedBox(height: 24),
+                  ],
+                ),
               ),
             ),
           ),

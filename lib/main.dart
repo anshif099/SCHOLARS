@@ -20,6 +20,7 @@ import 'pages/student_dashboard_page.dart';
 import 'pages/teacher_dashboard_page.dart';
 import 'services/call_manager.dart';
 import 'services/call_notification_service.dart';
+import 'services/student_class_access.dart';
 import 'theme/app_theme.dart';
 
 @pragma('vm:entry-point')
@@ -195,6 +196,19 @@ class _AuthGateState extends State<_AuthGate> {
           if (snapshot.value != null) {
             final st = Map<dynamic, dynamic>.from(snapshot.value as Map);
             st['key'] = key;
+            if (!await StudentClassAccess.exists(st)) {
+              await prefs.remove('is_student_logged_in');
+              await prefs.remove('student_data');
+              await CallNotificationService.deactivateStudentSession();
+              if (mounted) {
+                setState(() {
+                  _homePage = const LandingPage();
+                  _isLoading = false;
+                  _loginCheckDone = true;
+                });
+              }
+              return;
+            }
             await CallNotificationService.activateForStudent(key);
             if (mounted) {
               setState(() {
