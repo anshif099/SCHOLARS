@@ -103,6 +103,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   final Map<String, Timer> _remoteFirstFrameTimers = <String, Timer>{};
   final Map<String, _PeerSession> _peerSessions = <String, _PeerSession>{};
   final Set<String> _teacherPeerStartInProgress = <String>{};
+  bool _teacherPeerSyncInProgress = false;
+  bool _teacherPeerSyncPending = false;
   List<Map<String, dynamic>>? _iceServers;
   final Map<String, dynamic> _sdpConstraints = <String, dynamic>{
     'mandatory': <String, dynamic>{
@@ -148,6 +150,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   Timer? _recordingTimer;
   Timer? _studentReconnectTimer;
   Timer? _participantHeartbeatTimer;
+  Timer? _audioLevelTimer;
+  bool _audioLevelPollInProgress = false;
+  final Map<String, bool> _speakingPeers = <String, bool>{};
+  final Map<String, (double, double)> _previousAudioEnergy =
+      <String, (double, double)>{};
   Timer? _classEndConfirmationTimer;
   int _studentReconnectAttempts = 0;
   bool _studentReconnectInProgress = false;
@@ -226,7 +233,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   DatabaseReference get _participantsRef => _liveClassRef.child('participants');
 
   DatabaseReference get _webrtcRef => _liveClassRef.child('webrtc');
-
 
   String get _localRole => widget.isTeacher ? 'teacher' : 'student';
 
@@ -413,6 +419,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       _listenToParticipants();
       await _registerParticipant();
       _startParticipantHeartbeat();
+      _startAudioLevelPolling();
       _listenForFirebaseConnectionChanges();
       if (widget.isTeacher) {
         await _markTeacherClassLive();
@@ -493,6 +500,63 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       _participantHeartbeatInterval,
       (_) => unawaited(_refreshParticipantPresence()),
     );
+  }
+
+  void _startAudioLevelPolling() {
+    _audioLevelTimer?.cancel();
+    _audioLevelTimer = Timer.periodic(
+      const Duration(milliseconds: 700),
+      (_) => unawaited(_pollAudioLevels()),
+    );
+  }
+
+  Future<void> _pollAudioLevels() async {
+    if (_audioLevelPollInProgress || !mounted || _isCleaningUp) return;
+    _audioLevelPollInProgress = true;
+    try {
+      final next = <String, bool>{};
+      for (final entry in _peerSessions.entries.toList()) {
+        final connection = entry.value.connection;
+        if (connection == null || entry.value.isClosing) continue;
+        for (final report in await connection.getStats()) {
+          final values = report.values;
+          final kind =
+              values['kind']?.toString() ?? values['mediaType']?.toString();
+          if (kind != 'audio') continue;
+          final type = report.type.toLowerCase();
+          if (type != 'inbound-rtp' && type != 'media-source') continue;
+          final key = type == 'media-source' ? 'local' : entry.key;
+          final level = (values['audioLevel'] as num?)?.toDouble();
+          final energy = (values['totalAudioEnergy'] as num?)?.toDouble();
+          final duration = (values['totalSamplesDuration'] as num?)?.toDouble();
+          var speaking = level != null && level > 0.025;
+          if (energy != null && duration != null) {
+            final previous = _previousAudioEnergy[key];
+            if (previous != null && duration > previous.$2) {
+              speaking =
+                  sqrt(
+                    max(0, (energy - previous.$1) / (duration - previous.$2)),
+                  ) >
+                  0.025;
+            }
+            _previousAudioEnergy[key] = (energy, duration);
+          }
+          next[key] = (next[key] ?? false) || speaking;
+        }
+      }
+      if (_isMicMuted) next['local'] = false;
+      if (mounted && !mapEquals(_speakingPeers, next)) {
+        setState(
+          () => _speakingPeers
+            ..clear()
+            ..addAll(next),
+        );
+      }
+    } catch (error) {
+      debugPrint('Audio level polling failed: $error');
+    } finally {
+      _audioLevelPollInProgress = false;
+    }
   }
 
   Future<bool> _isFirebaseConnected() async {
@@ -935,47 +999,61 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       return;
     }
 
-    final studentConnections = <String, String?>{};
-    for (final participant in participants) {
-      if (participant['role'] != 'student') continue;
-      final studentId = participant['id']?.toString() ?? '';
-      if (studentId.isEmpty) continue;
-      studentConnections[studentId] = participant['connection_id']?.toString();
+    if (_teacherPeerSyncInProgress) {
+      _teacherPeerSyncPending = true;
+      return;
     }
-    final studentIds = studentConnections.keys.toSet();
-
-    for (final peerId in List<String>.from(_peerSessions.keys)) {
-      if (!studentIds.contains(peerId)) {
-        await _closePeerSession(peerId, removeSignals: true);
+    _teacherPeerSyncInProgress = true;
+    try {
+      final studentConnections = <String, String?>{};
+      for (final participant in participants) {
+        if (participant['role'] != 'student') continue;
+        final studentId = participant['id']?.toString() ?? '';
+        if (studentId.isEmpty) continue;
+        studentConnections[studentId] = participant['connection_id']
+            ?.toString();
       }
-    }
+      final studentIds = studentConnections.keys.toSet();
 
-    for (final studentId in studentIds) {
-      final connectionId = studentConnections[studentId];
-      final existingSession = _peerSessions[studentId];
-      if (existingSession != null &&
-          connectionId != null &&
-          connectionId.isNotEmpty &&
-          existingSession.remoteConnectionId != connectionId) {
-        debugPrint(
-          'Student $studentId rejoined with a new connection. Rebuilding peer.',
-        );
-        await _closePeerSession(studentId, removeSignals: true);
+      for (final peerId in List<String>.from(_peerSessions.keys)) {
+        if (!studentIds.contains(peerId)) {
+          await _closePeerSession(peerId, removeSignals: true);
+        }
       }
 
-      if (_peerSessions.containsKey(studentId) ||
-          _teacherPeerStartInProgress.contains(studentId)) {
-        continue;
+      for (final studentId in studentIds) {
+        final connectionId = studentConnections[studentId];
+        final existingSession = _peerSessions[studentId];
+        if (existingSession != null &&
+            connectionId != null &&
+            connectionId.isNotEmpty &&
+            existingSession.remoteConnectionId != connectionId) {
+          debugPrint(
+            'Student $studentId rejoined with a new connection. Rebuilding peer.',
+          );
+          await _closePeerSession(studentId, removeSignals: true);
+        }
+
+        if (_peerSessions.containsKey(studentId) ||
+            _teacherPeerStartInProgress.contains(studentId)) {
+          continue;
+        }
+
+        await _startTeacherPeer(studentId, connectionId);
       }
 
-      await _startTeacherPeer(studentId, connectionId);
+      // Existing senders must also adopt the lower per-peer limit when more
+      // students join after their connection was created.
+      await Future.wait(
+        _peerSessions.values.map(_applyOutgoingVideoLimitsForSession),
+      );
+    } finally {
+      _teacherPeerSyncInProgress = false;
+      if (_teacherPeerSyncPending && !_isCleaningUp && !_hasEndedCall) {
+        _teacherPeerSyncPending = false;
+        unawaited(_syncTeacherStudentPeers(_participants));
+      }
     }
-
-    // Existing senders must also adopt the lower per-peer limit when more
-    // students join after their connection was created.
-    await Future.wait(
-      _peerSessions.values.map(_applyOutgoingVideoLimitsForSession),
-    );
   }
 
   Future<void> _startTeacherPeer(String studentId, String? connectionId) async {
@@ -2274,13 +2352,13 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       await _closePeerSession(
         _localParticipantId,
         removeSignals: true,
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(const Duration(seconds: 10));
 
       // Rotating this ID tells the teacher to discard its disconnected peer
       // even though the student's account/participant ID stays the same.
       _connectionId = _buildConnectionId();
-      await _registerParticipant().timeout(const Duration(seconds: 5));
-      await _startStudentPeer().timeout(const Duration(seconds: 5));
+      await _registerParticipant().timeout(const Duration(seconds: 10));
+      await _startStudentPeer().timeout(const Duration(seconds: 10));
     } catch (error, stackTrace) {
       _reportNonFatalError('restart student connection', error, stackTrace);
     } finally {
@@ -2605,6 +2683,39 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       }
     }
 
+    Future<TaskSnapshot> retryRecordingUpload(
+      Reference storageRef,
+      SettableMetadata metadata, {
+      File? file,
+    }) async {
+      Object? lastError;
+      for (var attempt = 1; attempt <= 3; attempt++) {
+        try {
+          final snapshot = await waitForRecordingUpload(
+            file == null
+                ? storageRef.putBlob(_webRecordedBlob, metadata)
+                : storageRef.putFile(file, metadata),
+          );
+          if (snapshot.state == TaskState.success) return snapshot;
+          lastError = StateError(
+            'Storage upload ended in ${snapshot.state.name}',
+          );
+        } catch (error) {
+          lastError = error;
+          debugPrint('Recording upload attempt $attempt failed: $error');
+        }
+        if (attempt < 3) {
+          await updateRecordedClass(<String, dynamic>{
+            'upload_status': 'retrying',
+            'upload_error': lastError.toString(),
+            'upload_updated_at': DateTime.now().millisecondsSinceEpoch,
+          });
+          await Future<void>.delayed(Duration(seconds: attempt * 3));
+        }
+      }
+      throw lastError ?? StateError('Recording upload failed');
+    }
+
     try {
       await recordedRef.set(<String, dynamic>{
         'key': recordedRef.key,
@@ -2701,9 +2812,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       );
 
       try {
-        final snapshot = await waitForRecordingUpload(
-          storageRef.putBlob(_webRecordedBlob, metadata),
-        );
+        final snapshot = await retryRecordingUpload(storageRef, metadata);
         if (snapshot.state == TaskState.success) {
           videoUrl = await storageRef.getDownloadURL().timeout(
             const Duration(seconds: 30),
@@ -2794,8 +2903,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
               customMetadata: customMetadata,
             );
 
-            final snapshot = await waitForRecordingUpload(
-              storageRef.putFile(file, metadata),
+            final snapshot = await retryRecordingUpload(
+              storageRef,
+              metadata,
+              file: file,
             );
             if (snapshot.state == TaskState.success) {
               videoUrl = await storageRef.getDownloadURL().timeout(
@@ -2929,6 +3040,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     }
 
     _isCleaningUp = true;
+    _audioLevelTimer?.cancel();
+    _audioLevelTimer = null;
     final shouldMutateRoom = _hasClaimedSession;
 
     try {
@@ -3065,17 +3178,17 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     final teacherPeerId = _teacherRemotePeerId;
     if (teacherPeerId == null) return false;
     final session = _peerSessions[teacherPeerId];
-    // ICE can report connected while the remote video never renders. Keep the
-    // retry path active until a frame actually reaches the student's screen.
+    // Audio is the essential classroom channel. A delayed video decoder must
+    // not tear down a healthy teacher audio connection.
     final teacherVideoOff = _participants.any(
       (participant) =>
           participant['role'] == 'teacher' &&
           participant['video_enabled'] == false,
     );
-    if (teacherVideoOff) {
-      return session?.hasReceivedAudio == true;
-    }
-    return _remotePeersWithFirstFrame.contains(teacherPeerId);
+    return session?.transportConnected == true &&
+        (session?.hasReceivedAudio == true ||
+            (!teacherVideoOff &&
+                _remotePeersWithFirstFrame.contains(teacherPeerId)));
   }
 
   String? get _teacherRemotePeerId {
@@ -3091,10 +3204,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   // onFirstFrameRendered before mounting the view prevents that event forever.
   List<MapEntry<String, RTCVideoRenderer>> get _attachedRemoteRenderers {
     return _remoteRenderers.entries
-        .where(
-          (entry) =>
-              entry.value.srcObject != null,
-        )
+        .where((entry) => entry.value.srcObject != null)
         .toList();
   }
 
@@ -3276,6 +3386,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
   @override
   void dispose() {
+    _audioLevelTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _recordingTimer?.cancel();
     _recordingTimer = null;
@@ -5296,13 +5407,22 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
     if (_localRenderer.srcObject != null) {
       items.add(
-        _buildVideoStripItem('You', _localRenderer, mirror: _isFrontCamera),
+        _buildVideoStripItem(
+          'You',
+          _localRenderer,
+          peerId: 'local',
+          mirror: _isFrontCamera,
+        ),
       );
     }
 
     for (final entry in _attachedRemoteRenderers) {
       items.add(
-        _buildVideoStripItem(_remoteParticipantName(entry.key), entry.value),
+        _buildVideoStripItem(
+          _remoteParticipantName(entry.key),
+          entry.value,
+          peerId: entry.key,
+        ),
       );
     }
 
@@ -5326,6 +5446,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   Widget _buildVideoStripItem(
     String name,
     RTCVideoRenderer renderer, {
+    required String peerId,
     bool mirror = false,
   }) {
     return Container(
@@ -5333,7 +5454,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       decoration: BoxDecoration(
         color: const Color(0xFF2C2C2E),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white12),
+        border: Border.all(
+          color: _speakingPeers[peerId] == true
+              ? Colors.greenAccent
+              : Colors.white12,
+          width: _speakingPeers[peerId] == true ? 2 : 1,
+        ),
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(10),
@@ -5341,6 +5467,16 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
           fit: StackFit.expand,
           children: [
             RTCVideoView(renderer, mirror: mirror),
+            if (_speakingPeers[peerId] == true)
+              const Positioned(
+                top: 6,
+                right: 6,
+                child: Icon(
+                  Icons.graphic_eq_rounded,
+                  color: Colors.greenAccent,
+                  size: 22,
+                ),
+              ),
             Positioned(
               left: 6,
               bottom: 6,
