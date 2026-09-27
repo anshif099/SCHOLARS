@@ -3455,6 +3455,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
                   ),
                 ),
               ),
+              if (!hideLiveChrome && !_isInitializing)
+                Positioned(
+                  top: 76,
+                  left: 20,
+                  child: _buildSpeakerBadge(_mainVideoPeerId, compact: false),
+                ),
               if (!hideLiveChrome)
                 Positioned(
                   top: 20,
@@ -3569,7 +3575,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
                         color: const Color(0xFF2C2C2E),
                         borderRadius: BorderRadius.circular(16),
                         border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.2),
+                          color: _speakingPeers[_pipVideoPeerId] == true
+                              ? Colors.greenAccent
+                              : Colors.white.withValues(alpha: 0.2),
                           width: 2,
                         ),
                         boxShadow: const [
@@ -3578,7 +3586,20 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
                       ),
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(14),
-                        child: _buildPipContent(),
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            _buildPipContent()!,
+                            Positioned(
+                              left: 6,
+                              bottom: 6,
+                              child: _buildSpeakerBadge(
+                                _pipVideoPeerId,
+                                compact: true,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -5522,6 +5543,65 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         widget.isTeacher ? Icons.school_rounded : Icons.person_rounded,
         color: Colors.white24,
         size: 36,
+      ),
+    );
+  }
+
+  String get _mainVideoPeerId {
+    if (!widget.isTeacher) return _teacherRemotePeerId ?? 'local';
+    return _showOwnCameraSmall
+        ? (_focusedRemoteEntry?.key ?? 'local')
+        : 'local';
+  }
+
+  String get _pipVideoPeerId {
+    if (!widget.isTeacher || _showOwnCameraSmall) return 'local';
+    return _focusedRemoteEntry?.key ?? 'local';
+  }
+
+  Widget _buildSpeakerBadge(String peerId, {required bool compact}) {
+    final isLocal = peerId == 'local';
+    final speaking = _speakingPeers[peerId] == true;
+    final muted = isLocal && _isMicMuted;
+    final name = isLocal ? 'You' : _remoteParticipantName(peerId);
+    return Container(
+      constraints: BoxConstraints(maxWidth: compact ? 106 : 220),
+      padding: EdgeInsets.symmetric(
+        horizontal: compact ? 7 : 10,
+        vertical: compact ? 4 : 6,
+      ),
+      decoration: BoxDecoration(
+        color: speaking
+            ? const Color(0xFF176B4C).withValues(alpha: 0.9)
+            : Colors.black.withValues(alpha: 0.65),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: speaking ? Colors.greenAccent : Colors.white24,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            muted
+                ? Icons.mic_off_rounded
+                : (speaking ? Icons.graphic_eq_rounded : Icons.mic_rounded),
+            color: speaking ? Colors.greenAccent : Colors.white70,
+            size: compact ? 13 : 17,
+          ),
+          const SizedBox(width: 5),
+          Flexible(
+            child: Text(
+              name,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.poppins(
+                color: Colors.white,
+                fontSize: compact ? 10 : 12,
+                fontWeight: speaking ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
