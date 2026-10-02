@@ -995,6 +995,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     if (!widget.isTeacher ||
         _hasEndedCall ||
         _isCleaningUp ||
+        _iceServers == null ||
         _localStream == null) {
       return;
     }
@@ -2273,10 +2274,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
   void _handleRemoteDisconnect(String peerId, String message) {
     _peerSessions[peerId]?.transportConnected = false;
-    _remoteFirstFrameTimers.remove(peerId)?.cancel();
-    _remotePeersWithFirstFrame.remove(peerId);
-    final renderer = _remoteRenderers[peerId];
-    renderer?.srcObject = null;
+    // ICE can recover after switching between Wi-Fi and mobile data without
+    // emitting another onTrack event. Keep the receiver attached so audio and
+    // video resume when the transport recovers. Closing the session disposes
+    // its renderer when a full reconnect is needed.
 
     if (!mounted) {
       return;
@@ -3167,6 +3168,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     return _remoteRenderers.entries
         .where(
           (entry) =>
+              _peerSessions[entry.key]?.transportConnected == true &&
               entry.value.srcObject != null &&
               _remotePeersWithFirstFrame.contains(entry.key),
         )
