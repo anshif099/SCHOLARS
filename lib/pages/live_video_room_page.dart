@@ -4701,21 +4701,29 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   Future<void> _stopSharingDocument() async {
+    if (!widget.isTeacher || _isProcessing || _isSharedDocumentPickerOpen) {
+      return;
+    }
     setState(() {
       _isProcessing = true;
-      _localSharedFile = null;
     });
     try {
       await _cancelDocumentViewSync();
       await _clearDrawings();
       await _webrtcRef.child('shared_document').remove();
+      _localSharedFile = null;
       _recordPresentationEvent(hidden: true);
     } catch (e) {
       debugPrint('Error stopping share: $e');
+      if (mounted && !_hasEndedCall) {
+        _showSnackBar('Unable to close shared document. Please try again.');
+      }
     } finally {
-      setState(() {
-        _isProcessing = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+        });
+      }
     }
   }
 
@@ -5034,82 +5042,115 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   Widget _buildDocumentViewControls() {
     return Positioned(
       top: 12,
+      left: 12,
       right: 12,
       child: SafeArea(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.78),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: Colors.white24),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (_sharedDocType == 'pdf') ...[
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: Text(
-                    _sharedDocPageCount > 0
-                        ? '$_sharedDocPage/$_sharedDocPageCount'
-                        : 'Page $_sharedDocPage',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w600,
+        child: Align(
+          alignment: Alignment.topRight,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.78),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: Colors.white24),
+            ),
+            child: Wrap(
+              alignment: WrapAlignment.end,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                if (_sharedDocType == 'pdf') ...[
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Text(
+                      _sharedDocPageCount > 0
+                          ? '$_sharedDocPage/$_sharedDocPageCount'
+                          : 'Page $_sharedDocPage',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
-                ),
-                Container(width: 1, height: 24, color: Colors.white24),
+                  Container(width: 1, height: 24, color: Colors.white24),
+                ],
+                if (widget.isTeacher) ...[
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: 'Upload another document',
+                    onPressed: _isProcessing || _isSharedDocumentPickerOpen
+                        ? null
+                        : _shareDocumentPicker,
+                    icon: const Icon(
+                      Icons.upload_file_rounded,
+                      color: Colors.white,
+                    ),
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: 'Close shared document',
+                    onPressed: _isProcessing || _isSharedDocumentPickerOpen
+                        ? null
+                        : _stopSharingDocument,
+                    icon: const Icon(
+                      Icons.close_rounded,
+                      color: Colors.redAccent,
+                    ),
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: 'Zoom out',
+                    onPressed: _documentZoom > 1.0
+                        ? () => _setDocumentZoom(_documentZoom - 0.5)
+                        : null,
+                    icon: const Icon(
+                      Icons.zoom_out_rounded,
+                      color: Colors.white,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _resetDocumentZoom,
+                    child: Text(
+                      '${(_documentZoom * 100).round()}%',
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: 'Zoom in',
+                    onPressed: _documentZoom < 5.0
+                        ? () => _setDocumentZoom(_documentZoom + 0.5)
+                        : null,
+                    icon: const Icon(
+                      Icons.zoom_in_rounded,
+                      color: Colors.white,
+                    ),
+                  ),
+                ] else
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Text(
+                      'Teacher view ${(_documentZoom * 100).round()}%',
+                      style: const TextStyle(color: Colors.white70),
+                    ),
+                  ),
+                if (!widget.isTeacher) ...[
+                  Container(width: 1, height: 24, color: Colors.white24),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: _isStudentDocumentFullScreen
+                        ? 'Exit full screen'
+                        : 'View full screen',
+                    onPressed: _toggleDocumentFullScreen,
+                    icon: Icon(
+                      _isStudentDocumentFullScreen
+                          ? Icons.fullscreen_exit_rounded
+                          : Icons.fullscreen_rounded,
+                      color: Colors.white,
+                    ),
+                  ),
+                ],
               ],
-              if (widget.isTeacher) ...[
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  tooltip: 'Zoom out',
-                  onPressed: _documentZoom > 1.0
-                      ? () => _setDocumentZoom(_documentZoom - 0.5)
-                      : null,
-                  icon: const Icon(Icons.zoom_out_rounded, color: Colors.white),
-                ),
-                TextButton(
-                  onPressed: _resetDocumentZoom,
-                  child: Text(
-                    '${(_documentZoom * 100).round()}%',
-                    style: const TextStyle(color: Colors.white),
-                  ),
-                ),
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  tooltip: 'Zoom in',
-                  onPressed: _documentZoom < 5.0
-                      ? () => _setDocumentZoom(_documentZoom + 0.5)
-                      : null,
-                  icon: const Icon(Icons.zoom_in_rounded, color: Colors.white),
-                ),
-              ] else
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: Text(
-                    'Teacher view ${(_documentZoom * 100).round()}%',
-                    style: const TextStyle(color: Colors.white70),
-                  ),
-                ),
-              if (!widget.isTeacher) ...[
-                Container(width: 1, height: 24, color: Colors.white24),
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  tooltip: _isStudentDocumentFullScreen
-                      ? 'Exit full screen'
-                      : 'View full screen',
-                  onPressed: _toggleDocumentFullScreen,
-                  icon: Icon(
-                    _isStudentDocumentFullScreen
-                        ? Icons.fullscreen_exit_rounded
-                        : Icons.fullscreen_rounded,
-                    color: Colors.white,
-                  ),
-                ),
-              ],
-            ],
+            ),
           ),
         ),
       ),
@@ -5372,7 +5413,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
                         const SizedBox(width: 8),
                       ],
                       TextButton.icon(
-                        onPressed: _stopSharingDocument,
+                        onPressed: _isProcessing || _isSharedDocumentPickerOpen
+                            ? null
+                            : _stopSharingDocument,
                         icon: const Icon(
                           Icons.stop_rounded,
                           color: Colors.redAccent,
