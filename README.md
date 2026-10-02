@@ -19,6 +19,11 @@ firebase deploy --only functions:getLiveClassIceServers
 
 Enable Firebase Anonymous Authentication for live-call participants. Keep the
 Cloudflare API token in Functions; never put it in Vercel or the Flutter build.
+The app calls the deployed function's Cloud Run URL because the
+`cloudfunctions.net` frontend is unreachable on some networks. If the function
+is recreated in another project or region, set `WEBRTC_RELAY_CALLABLE_URL` to
+its new Cloud Run URL using `--dart-define`. This endpoint still uses Firebase
+callable authentication and keeps TURN secrets on the server.
 The Vercel web build no longer needs TURN environment variables. Native builds
 use the same callable function. Existing static TURN configuration remains
 available for another relay provider:

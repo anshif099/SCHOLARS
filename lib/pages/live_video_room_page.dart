@@ -424,6 +424,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       if (widget.isTeacher) {
         await _markTeacherClassLive();
       }
+      _updateStatus('Connecting to video relay...');
       _iceServers = await LiveClassIceService.load(
         classId: widget.classId,
         participantId: _localParticipantId,
@@ -2430,6 +2431,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   Future<void> _failAndClose(String message) async {
     _hasEndedCall = true;
     _errorMessage = message;
+    if (mounted) {
+      setState(() {
+        _isInitializing = false;
+        _statusMessage = message;
+      });
+    }
     await _cleanupRoomState(removeLiveClass: widget.isTeacher);
 
     if (!mounted) {
