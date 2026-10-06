@@ -3,8 +3,19 @@ import 'package:flutter/foundation.dart';
 
 class FirebaseUploadAuthService {
   FirebaseUploadAuthService._();
+  static Future<String?>? _signInTask;
 
-  static Future<String?> ensureSignedIn() async {
+  static Future<String?> ensureSignedIn() {
+    final pending = _signInTask;
+    if (pending != null) return pending;
+    final task = _ensureSignedIn();
+    _signInTask = task;
+    return task.whenComplete(() {
+      if (identical(_signInTask, task)) _signInTask = null;
+    });
+  }
+
+  static Future<String?> _ensureSignedIn() async {
     final auth = FirebaseAuth.instance;
     final currentUser = auth.currentUser;
     if (currentUser != null) {

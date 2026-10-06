@@ -139,7 +139,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   MediaRecorder? _mediaRecorder;
   String? _localVideoPath;
   Future<bool>? _recordingStopTask;
+  bool _recordingFinalized = true;
   Future<bool>? _recordingSaveTask;
+  DatabaseReference? _recordedClassRef;
+  int? _recordedAt;
   DateTime? _callStartedAt;
   DateTime? _recordingStartTime;
   final List<Map<String, dynamic>> _recordingPresentationEvents =
@@ -906,6 +909,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     };
 
     peerConnection.onConnectionState = (state) {
+      if (!_canAttachRemoteStream(session)) return;
       switch (state) {
         case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
           _handlePeerConnected(peerId);
@@ -931,6 +935,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     };
 
     peerConnection.onIceConnectionState = (state) {
+      if (!_canAttachRemoteStream(session)) return;
       switch (state) {
         case RTCIceConnectionState.RTCIceConnectionStateChecking:
           _updateStatus('Negotiating secure media channel...');
@@ -2119,6 +2124,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       }
 
       _recordingStartTime = DateTime.now();
+      _recordingFinalized = false;
+      _recordedClassRef = null;
+      _recordedAt = null;
       _recordingPresentationEvents.clear();
       _lastRecordedPresentationState = null;
       _recordPresentationEvent(force: true);
@@ -2166,13 +2174,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       recordingFinalized: recordingFinalized,
       showResult: true,
     );
-
-    if (!recordingFinalized && _localVideoPath == videoPath) {
-      _localVideoPath = null;
-      if (mounted) {
-        setState(() {});
-      }
-    }
 
     if (!saved && mounted) {
       _showSnackBar(
@@ -2237,6 +2238,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       }
 
       return saved;
+    } catch (error, stackTrace) {
+      _reportNonFatalError('save recording', error, stackTrace);
+      return false;
     } finally {
       _recordingSaveTask = null;
       if (mounted) {
@@ -2262,6 +2266,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     }
 
     _peerSessions[peerId]?.transportConnected = true;
+    if (!widget.isTeacher && _isTeacherRemotePeer(peerId)) {
+      _studentReconnectAttempts = 0;
+      _showStudentReconnectAction = false;
+    }
     setState(() {
       _focusedRemotePeerId ??= peerId;
       final connectedCount = _connectedRemoteCount;
@@ -2300,7 +2308,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   void _scheduleStudentReconnect({Duration? delay}) {
     if (widget.isTeacher || _hasEndedCall || _isCleaningUp) return;
 
-    _studentReconnectTimer?.cancel();
+    if (_studentReconnectTimer?.isActive == true) return;
     _studentReconnectTimer = Timer(delay ?? _studentReconnectDelay, () {
       if (!_isStudentTeacherConnected && !_hasEndedCall && !_isCleaningUp) {
         if (_studentReconnectAttempts >= _maxStudentReconnectAttempts) {
@@ -2360,6 +2368,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       // even though the student's account/participant ID stays the same.
       _connectionId = _buildConnectionId();
       await _registerParticipant().timeout(const Duration(seconds: 10));
+      _iceServers = await LiveClassIceService.load(
+        classId: widget.classId,
+        participantId: _localParticipantId,
+      );
       await _startStudentPeer().timeout(const Duration(seconds: 10));
     } catch (error, stackTrace) {
       _reportNonFatalError('restart student connection', error, stackTrace);
@@ -2479,7 +2491,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
     final recorder = _mediaRecorder;
     if (!widget.isTeacher || recorder == null) {
-      return Future<bool>.value(true);
+      return Future<bool>.value(_recordingFinalized);
     }
 
     final task = _stopTeacherRecordingInternal(recorder);
@@ -2525,6 +2537,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     } finally {
       _stopLoopbackConnection();
     }
+    _recordingFinalized = success;
     return success;
   }
 
@@ -2566,7 +2579,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     // bounded so a stuck encoder cannot freeze the Android main thread.
     final recordingFinalized = shouldAutoSaveRecording
         ? await _stopTeacherRecording()
-        : true;
+        : _recordingFinalized;
 
     // STEP 2: Clean up WebRTC (signals termination to student immediately via node removal)
     try {
@@ -2585,10 +2598,60 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       if (mounted && (pendingSaveTask != null || shouldAutoSaveRecording)) {
         setState(() => _statusMessage = 'Saving recording...');
       }
+      bool saved = true;
       if (pendingSaveTask != null) {
-        await pendingSaveTask;
+        saved = await pendingSaveTask;
       } else if (shouldAutoSaveRecording) {
-        await _saveRecordingFile(
+        saved = await _saveRecordingFile(
+          videoPath ?? _localVideoPath,
+          durationText,
+          recordingFinalized: recordingFinalized,
+          showResult: false,
+        );
+      }
+      if (!saved && !recordingFinalized && mounted) {
+        await showDialog<void>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Recording could not be finalized'),
+            content: const Text(
+              'The recording has been retained, but could not be saved as a playable video.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('Close'),
+              ),
+            ],
+          ),
+        );
+      }
+      while (!saved && mounted && recordingFinalized) {
+        if (!mounted) break;
+        final retry = await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Recording was not uploaded'),
+            content: Text(
+              kIsWeb
+                  ? 'Keep this page open and retry to preserve your recording.'
+                  : 'Your recording is kept on this device at ${videoPath ?? _localVideoPath}. Retry after checking your connection.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('Leave'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const Text('Retry upload'),
+              ),
+            ],
+          ),
+        );
+        if (retry != true) break;
+        saved = await _saveRecordingFile(
           videoPath ?? _localVideoPath,
           durationText,
           recordingFinalized: recordingFinalized,
@@ -2613,22 +2676,26 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     String? uploadError;
     int? fileSizeBytes;
     String uploadStatus = 'no_file';
-    final recordedAt = DateTime.now().millisecondsSinceEpoch;
+    final recordedAt = _recordedAt ??= DateTime.now().millisecondsSinceEpoch;
     final presentationEvents = _recordingPresentationEvents
         .map((event) => Map<String, dynamic>.from(event))
         .toList(growable: false);
 
-    final recordedRef = FirebaseDatabase.instance
+    final recordedRef = _recordedClassRef ??= FirebaseDatabase.instance
         .ref()
         .child('recorded_classes')
         .child(widget.classId)
         .push();
 
-    Future<void> updateRecordedClass(Map<String, dynamic> values) async {
+    Future<void> updateRecordedClass(
+      Map<String, dynamic> values, {
+      bool required = false,
+    }) async {
       try {
         await recordedRef.update(values);
       } catch (e) {
         debugPrint('Failed to update recorded_classes metadata: $e');
+        if (required) rethrow;
       }
     }
 
@@ -2646,7 +2713,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     }
 
     Future<TaskSnapshot> waitForRecordingUpload(UploadTask uploadTask) async {
-      FirebaseStorage.instance.setMaxUploadRetryTime(_uploadRetryLimit);
       var lastPublishedProgress = -5;
       Future<void> pendingProgressUpdate = Future<void>.value();
       final progressSubscription = uploadTask.snapshotEvents.listen((snapshot) {
@@ -2697,6 +2763,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       File? file,
     }) async {
       Object? lastError;
+      // Configure retries before creating the task; native tasks capture this
+      // setting at creation time.
+      FirebaseStorage.instance.setMaxUploadRetryTime(_uploadRetryLimit);
       for (var attempt = 1; attempt <= 3; attempt++) {
         try {
           final snapshot = await waitForRecordingUpload(
@@ -2724,8 +2793,21 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       throw lastError ?? StateError('Recording upload failed');
     }
 
+    Future<String> resolveDownloadUrl(Reference storageRef) async {
+      for (var attempt = 1; ; attempt++) {
+        try {
+          return await storageRef.getDownloadURL().timeout(
+            const Duration(seconds: 30),
+          );
+        } catch (_) {
+          if (attempt >= 3) rethrow;
+          await Future<void>.delayed(Duration(seconds: attempt * 2));
+        }
+      }
+    }
+
     try {
-      await recordedRef.set(<String, dynamic>{
+      await recordedRef.update(<String, dynamic>{
         'key': recordedRef.key,
         'topic': widget.topic,
         'subject_id': widget.subjectId,
@@ -2748,6 +2830,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       debugPrint('Initial metadata saved to recorded_classes');
     } catch (e) {
       debugPrint('Failed to create recorded_classes metadata: $e');
+      return false;
     }
 
     if (!recordingFinalized) {
@@ -2822,12 +2905,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       try {
         final snapshot = await retryRecordingUpload(storageRef, metadata);
         if (snapshot.state == TaskState.success) {
-          videoUrl = await storageRef.getDownloadURL().timeout(
-            const Duration(seconds: 30),
-          );
+          videoUrl = await resolveDownloadUrl(storageRef);
           uploadStatus = 'ready';
           debugPrint('Video uploaded to Storage: $videoUrl');
-          _webRecordedBlob = null;
           await updateRecordedClass(<String, dynamic>{
             'video_url': videoUrl,
             'upload_status': uploadStatus,
@@ -2836,7 +2916,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
             'upload_progress': 100,
             'upload_updated_at': DateTime.now().millisecondsSinceEpoch,
             'upload_error': null,
-          });
+          }, required: true);
+          _webRecordedBlob = null;
           return true;
         } else {
           await markRecordingFailed(
@@ -2917,9 +2998,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
               file: file,
             );
             if (snapshot.state == TaskState.success) {
-              videoUrl = await storageRef.getDownloadURL().timeout(
-                const Duration(seconds: 30),
-              );
+              videoUrl = await resolveDownloadUrl(storageRef);
               uploadStatus = 'ready';
               debugPrint('Video uploaded to Storage: $videoUrl');
               await updateRecordedClass(<String, dynamic>{
@@ -2931,7 +3010,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
                 'mime_type': 'video/mp4',
                 'upload_progress': 100,
                 'upload_updated_at': DateTime.now().millisecondsSinceEpoch,
-              });
+              }, required: true);
 
               try {
                 await file.delete();

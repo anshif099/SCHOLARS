@@ -24,6 +24,8 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
     private static final String TAG = "VideoFileRenderer";
@@ -63,7 +65,9 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
     private MediaCodec.BufferInfo audioBufferInfo;
     private int trackIndex = -1;
     private int audioTrackIndex;
-    private boolean isRunning = true;
+    private volatile boolean isRunning = true;
+    private final AtomicBoolean framePending = new AtomicBoolean(false);
+    private final AtomicInteger pendingAudioSamples = new AtomicInteger(0);
     private GlRectDrawer drawer;
     private Surface surface;
     private MediaCodec audioEncoder;
@@ -128,12 +132,24 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
 
     @Override
     public void onFrame(VideoFrame frame) {
+        // Retained camera buffers must never accumulate behind a slow encoder.
+        // A long class otherwise exhausts GPU/camera memory and kills the call.
+        if (!isRunning || !framePending.compareAndSet(false, true)) return;
         frame.retain();
         if (outputFileWidth == -1) {
             setOutputSize(frame);
             initVideoEncoder();
         }
-        renderThreadHandler.post(() -> renderFrameOnRenderThread(frame));
+        if (!renderThreadHandler.post(() -> {
+            try {
+                renderFrameOnRenderThread(frame);
+            } finally {
+                framePending.set(false);
+            }
+        })) {
+            frame.release();
+            framePending.set(false);
+        }
     }
 
     private void setOutputSize(VideoFrame frame) {
@@ -464,9 +480,15 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
 
     @Override
     public void onWebRtcAudioRecordSamplesReady(JavaAudioDeviceModule.AudioSamples audioSamples) {
-        if (!isRunning)
+        if (!isRunning || audioThreadHandler == null)
             return;
-        audioThreadHandler.post(() -> {
+        // Keep at most one second of 10 ms PCM callbacks queued on slow devices.
+        if (pendingAudioSamples.incrementAndGet() > 100) {
+            pendingAudioSamples.decrementAndGet();
+            return;
+        }
+        if (!audioThreadHandler.post(() -> {
+          try {
             if (audioEncoder == null) try {
                 audioEncoder = MediaCodec.createEncoderByType("audio/mp4a-latm");
                 MediaFormat format = new MediaFormat();
@@ -494,7 +516,14 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
                 presTime += calculateAudioDurationUs(audioSamples, data.length);
             }
             drainAudio(false);
-        });
+          } catch (Exception e) {
+            Log.e(TAG, "Could not encode recording audio", e);
+          } finally {
+            pendingAudioSamples.decrementAndGet();
+          }
+        })) {
+            pendingAudioSamples.decrementAndGet();
+        }
     }
 
     private long calculateAudioDurationUs(JavaAudioDeviceModule.AudioSamples audioSamples, int byteCount) {
