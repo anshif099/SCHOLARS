@@ -1,5 +1,5 @@
-import 'package:package_info_plus/package_info_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:scholars/main.dart';
@@ -8,26 +8,31 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() {
-    SharedPreferences.setMockInitialValues(<String, Object>{});
-    PackageInfo.setMockInitialValues(
-      appName: 'Scholars',
-      packageName: 'com.example.scholars',
-      version: '1.0.0',
-      buildNumber: '1',
-      buildSignature: '',
-    );
+    GoogleFonts.config.allowRuntimeFetching = false;
   });
 
-  testWidgets('App renders landing page', (WidgetTester tester) async {
+  testWidgets('Payment popup blocks startup and cannot be dismissed', (
+    WidgetTester tester,
+  ) async {
     await tester.pumpWidget(const ScholarsApp());
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 1600));
+    await tester.pumpAndSettle();
 
-    // Verify that the landing page renders with the app name
-    expect(find.text('Scholars Academy'), findsOneWidget);
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('Payment required'), findsOneWidget);
+    expect(find.textContaining('Rs. 717.63'), findsOneWidget);
+    expect(find.textContaining('Rs. 1,000'), findsOneWidget);
+    expect(
+      find.textContaining('Please contact your management.'),
+      findsOneWidget,
+    );
+    expect(find.text('Login ID or Email'), findsNothing);
 
-    // The shared ID/email form handles admin, teacher, and student sign-in.
-    expect(find.text('Enter your ID or Email to continue'), findsOneWidget);
-    expect(find.text('Login ID or Email'), findsOneWidget);
+    await tester.tapAt(const Offset(5, 5));
+    await tester.pumpAndSettle();
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('Login ID or Email'), findsNothing);
   });
 }
