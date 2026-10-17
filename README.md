@@ -2,6 +2,12 @@
 
 Distance-learning application for Scholars Academy.
 
+On Windows, the Gradle launcher sets `-Djbr.java.io.use.nio=false` at JVM startup
+to avoid JetBrains Runtime file-lock errors while Android Gradle Plugin appends
+to generated CMake timing logs. After pulling this change, stop existing Gradle
+daemons once with `android\gradlew.bat -p android --stop`, then use
+`flutter build appbundle` as usual.
+
 ## Reliable live-class networking
 
 Live classes use Firebase Realtime Database to exchange WebRTC offers, answers,
