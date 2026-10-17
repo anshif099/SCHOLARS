@@ -29,6 +29,23 @@ class MainActivity : FlutterActivity() {
             AUDIO_OUTPUT_CHANNEL
         ).setMethodCallHandler { call, result ->
             when (call.method) {
+                "prepareMediaPlayback" -> {
+                    try {
+                        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            audioManager.clearCommunicationDevice()
+                        } else {
+                            @Suppress("DEPRECATION")
+                            audioManager.stopBluetoothSco()
+                            @Suppress("DEPRECATION")
+                            audioManager.isSpeakerphoneOn = false
+                        }
+                        audioManager.mode = AudioManager.MODE_NORMAL
+                        result.success(null)
+                    } catch (error: Exception) {
+                        result.error("AUDIO_OUTPUT_ERROR", "Unable to restore media audio.", error.message)
+                    }
+                }
                 "maximizeSpeakerVolume" -> {
                     try {
                         maximizeSpeakerVolume()

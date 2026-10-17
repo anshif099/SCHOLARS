@@ -4,6 +4,7 @@ package com.cloudwebrtc.webrtc.record;
 
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
+import android.media.MediaCodecList;
 import android.media.AudioFormat;
 import android.media.MediaFormat;
 import android.media.MediaMuxer;
@@ -65,7 +66,7 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
     private static final int TARGET_SHORT_EDGE = 360;
     private static final int TARGET_LONG_EDGE = 640;
     private static final int TARGET_KB_PER_MINUTE = 1000;
-    private static final int AUDIO_BIT_RATE = 16 * 1000;
+    private static final int AUDIO_BIT_RATE = 64 * 1000;
     private static final int TOTAL_BIT_RATE = TARGET_KB_PER_MINUTE * 1024 * 8 / 60;
     private static final int VIDEO_BIT_RATE =
             Math.max(96 * 1000, TOTAL_BIT_RATE - AUDIO_BIT_RATE);
@@ -269,7 +270,7 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
                     if (encoderStarted) {
                         try {
                             encoder.signalEndOfInputStream();
-                            drainEncoder();
+                            drainEncoder(true);
                             // If no audio samples arrived during the complete
                             // recording, finalize a video-only MP4. Do not
                             // choose this before stop: microphone callbacks
@@ -447,13 +448,19 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
     }
 
     private void drainEncoder() {
+        drainEncoder(false);
+    }
+
+    private void drainEncoder(boolean finalDrain) {
         if (!encoderStarted) {
             startEncoderIfNeeded();
             return;
         }
+        int tryAgainCount = 0;
         while (true) {
             int encoderStatus = encoder.dequeueOutputBuffer(bufferInfo, 10000);
             if (encoderStatus == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                if (finalDrain && ++tryAgainCount < AUDIO_FINAL_DRAIN_MAX_TRIES) continue;
                 break;
             } else if (encoderStatus == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) {
                 // not expected for an encoder
@@ -476,6 +483,7 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
                 Log.e(TAG, "unexpected result fr om encoder.dequeueOutputBuffer: " + encoderStatus);
             } else { // encoderStatus >= 0
                 try {
+                    tryAgainCount = 0;
                     ByteBuffer encodedData = encoderOutputBuffers[encoderStatus];
                     if (encodedData == null) {
                         Log.e(TAG, "encoderOutputBuffer " + encoderStatus + " was null");
@@ -582,6 +590,13 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
     public void onWebRtcAudioRecordSamplesReady(JavaAudioDeviceModule.AudioSamples audioSamples) {
         if (!isRunning || audioTrackUnavailable || audioThreadHandler == null)
             return;
+        final JavaAudioDeviceModule.AudioSamples recordingSamples;
+        try {
+            recordingSamples = RecordingAudioFormat.normalize(audioSamples);
+        } catch (RuntimeException error) {
+            Log.e(TAG, "Unsupported recording audio input", error);
+            return;
+        }
         final long capturedAtUs = (System.nanoTime() - recordingStartNs) / 1000L;
         // Keep at most one second of 10 ms PCM callbacks queued on slow devices.
         if (pendingAudioSamples.incrementAndGet() > 100) {
@@ -590,35 +605,41 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
         }
         if (!audioThreadHandler.post(() -> {
           try {
-            if (audioEncoder == null) try {
-                audioEncoder = MediaCodec.createEncoderByType("audio/mp4a-latm");
+            if (audioEncoder == null) {
                 MediaFormat format = new MediaFormat();
                 format.setString(MediaFormat.KEY_MIME, "audio/mp4a-latm");
-                format.setInteger(MediaFormat.KEY_CHANNEL_COUNT, audioSamples.getChannelCount());
-                format.setInteger(MediaFormat.KEY_SAMPLE_RATE, audioSamples.getSampleRate());
+                format.setInteger(MediaFormat.KEY_CHANNEL_COUNT, RecordingAudioFormat.CHANNELS);
+                format.setInteger(MediaFormat.KEY_SAMPLE_RATE, RecordingAudioFormat.SAMPLE_RATE);
                 format.setInteger(MediaFormat.KEY_BIT_RATE, AUDIO_BIT_RATE);
                 format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
-                audioEncoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-                audioEncoder.start();
-                audioInputBuffers = audioEncoder.getInputBuffers();
-                audioOutputBuffers = audioEncoder.getOutputBuffers();
-            } catch (IOException exception) {
-                Log.wtf(TAG, exception);
-                return;
+                String encoderName = new MediaCodecList(MediaCodecList.REGULAR_CODECS)
+                        .findEncoderForFormat(format);
+                if (encoderName == null) throw new IOException("No compatible AAC audio encoder");
+                MediaCodec candidate = MediaCodec.createByCodecName(encoderName);
+                try {
+                    candidate.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+                    candidate.start();
+                    audioInputBuffers = candidate.getInputBuffers();
+                    audioOutputBuffers = candidate.getOutputBuffers();
+                    audioEncoder = candidate;
+                } catch (Exception error) {
+                    candidate.release();
+                    throw error;
+                }
             }
             drainAudio(false);
             int bufferIndex = audioEncoder.dequeueInputBuffer(0);
             if (bufferIndex >= 0) {
                 ByteBuffer buffer = audioInputBuffers[bufferIndex];
                 buffer.clear();
-                byte[] data = audioSamples.getData();
+                byte[] data = recordingSamples.getData();
                 buffer.put(data);
                 // Advance with capture time when callbacks are dropped or the
                 // encoder is busy. Counting only accepted PCM compresses the
                 // audio timeline and leaves a silent tail on long videos.
                 long sampleTimeUs = Math.max(presTime, capturedAtUs);
                 audioEncoder.queueInputBuffer(bufferIndex, 0, data.length, sampleTimeUs, 0);
-                presTime = sampleTimeUs + calculateAudioDurationUs(audioSamples, data.length);
+                presTime = sampleTimeUs + calculateAudioDurationUs(recordingSamples, data.length);
             }
             drainAudio(false);
           } catch (Exception e) {

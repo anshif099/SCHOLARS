@@ -8,6 +8,9 @@ import com.cloudwebrtc.webrtc.utils.EglUtils;
 import org.webrtc.VideoTrack;
 
 import java.io.File;
+import java.io.IOException;
+import android.media.MediaExtractor;
+import android.media.MediaFormat;
 
 public class MediaRecorderImpl {
 
@@ -51,7 +54,7 @@ public class MediaRecorderImpl {
 
     public File getRecordFile() { return recordFile; }
 
-    public void stopRecording() {
+    public void stopRecording() throws IOException {
         isRunning = false;
         if (audioInterceptor != null)
             audioInterceptor.detachCallback(id);
@@ -59,6 +62,25 @@ public class MediaRecorderImpl {
             videoTrack.removeSink(videoFileRenderer);
             videoFileRenderer.release();
             videoFileRenderer = null;
+            if (audioInterceptor != null) verifyRecordedAudio(recordFile);
+        }
+    }
+
+    static void verifyRecordedAudio(File recordFile) throws IOException {
+        MediaExtractor extractor = new MediaExtractor();
+        try {
+            extractor.setDataSource(recordFile.getAbsolutePath());
+            for (int track = 0; track < extractor.getTrackCount(); track++) {
+                String mime = extractor.getTrackFormat(track).getString(MediaFormat.KEY_MIME);
+                if (mime != null && mime.startsWith("audio/")) {
+                    extractor.selectTrack(track);
+                    if (extractor.getSampleTime() >= 0) return;
+                    extractor.unselectTrack(track);
+                }
+            }
+            throw new IOException("No microphone audio was saved. The video was retained on this device.");
+        } finally {
+            extractor.release();
         }
     }
 

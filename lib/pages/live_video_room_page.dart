@@ -140,6 +140,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   String? _localVideoPath;
   Future<bool>? _recordingStopTask;
   bool _recordingFinalized = true;
+  String? _recordingFinalizationError;
   Future<bool>? _recordingSaveTask;
   DatabaseReference? _recordedClassRef;
   int? _recordedAt;
@@ -1918,10 +1919,13 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
   Future<void> _startLoopbackConnection() async {
     try {
-      final pcA = await createPeerConnection(_rtcConfiguration);
-      final pcB = await createPeerConnection(_rtcConfiguration);
-
+      // Local-only negotiation keeps WebRTC's microphone active when students
+      // disconnect. It needs neither a TURN allocation nor a second AudioRecord.
+      final configuration = <String, dynamic>{'iceServers': <dynamic>[]};
+      final pcA = await createPeerConnection(configuration);
       _loopbackConnectionA = pcA;
+      final pcB = await createPeerConnection(configuration);
+
       _loopbackConnectionB = pcB;
 
       final localStream = _localStream;
@@ -2023,32 +2027,35 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
             debugPrint('Loopback connection wait timed out or completed');
           });
 
-      debugPrint(
-        'Solo audio-only loopback connection established successfully.',
-      );
+      debugPrint('Solo audio-only loopback negotiation completed.');
     } catch (e, s) {
       debugPrint('Failed to start loopback connection: $e');
       debugPrintStack(stackTrace: s);
+      await _stopLoopbackConnection();
+      rethrow;
     }
   }
 
-  void _stopLoopbackConnection() {
+  Future<void> _stopLoopbackConnection() async {
     if (_loopbackConnectionA == null && _loopbackConnectionB == null) {
       return;
     }
     debugPrint('Stopping solo loopback connection...');
-    try {
-      _loopbackConnectionA?.close();
-    } catch (e) {
-      debugPrint('Failed to close loopback connection A: $e');
-    }
-    try {
-      _loopbackConnectionB?.close();
-    } catch (e) {
-      debugPrint('Failed to close loopback connection B: $e');
-    }
+    final connections = [_loopbackConnectionA, _loopbackConnectionB];
     _loopbackConnectionA = null;
     _loopbackConnectionB = null;
+    for (final connection in connections.whereType<RTCPeerConnection>()) {
+      try {
+        await connection.close();
+      } catch (e) {
+        debugPrint('Failed to close recording audio connection: $e');
+      }
+      try {
+        await connection.dispose();
+      } catch (e) {
+        debugPrint('Failed to dispose recording audio connection: $e');
+      }
+    }
   }
 
   Future<void> _startRecording() async {
@@ -2107,6 +2114,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
           remoteStreams: remoteStreams,
         );
       } else if (WebRTC.platformIsAndroid) {
+        await _startLoopbackConnection();
+        if (!mounted || _hasEndedCall || _isCleaningUp) {
+          throw StateError('The class ended before recording started.');
+        }
         await _mediaRecorder!.startWithMixedAudio(
           _localVideoPath!,
           videoTrack: videoTrack,
@@ -2125,6 +2136,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
       _recordingStartTime = DateTime.now();
       _recordingFinalized = false;
+      _recordingFinalizationError = null;
       _recordedClassRef = null;
       _recordedAt = null;
       _recordingPresentationEvents.clear();
@@ -2146,6 +2158,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       debugPrint('Recording started: $_localVideoPath');
     } catch (e) {
       debugPrint('Failed to start recording: $e');
+      await _stopLoopbackConnection();
       _mediaRecorder = null;
       _localVideoPath = null;
       _showSnackBar('Recording could not start.');
@@ -2179,7 +2192,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       _showSnackBar(
         recordingFinalized
             ? 'Recording save failed. It will retry when the call ends.'
-            : 'Recording could not be finalized.',
+            : _recordingFinalizationError ??
+                  'Recording could not be finalized.',
       );
     }
   }
@@ -2533,9 +2547,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       success = false;
     } catch (e) {
       debugPrint('Failed to stop recording: $e');
+      _recordingFinalizationError = e is PlatformException
+          ? e.message ?? e.toString()
+          : e.toString();
       success = false;
     } finally {
-      _stopLoopbackConnection();
+      await _stopLoopbackConnection();
     }
     _recordingFinalized = success;
     return success;
@@ -2614,8 +2631,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
           context: context,
           builder: (dialogContext) => AlertDialog(
             title: const Text('Recording could not be finalized'),
-            content: const Text(
-              'The recording has been retained, but could not be saved as a playable video.',
+            content: Text(
+              _recordingFinalizationError ??
+                  'The recording has been retained, but could not be saved as a playable video.',
             ),
             actions: [
               TextButton(
@@ -2836,7 +2854,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     if (!recordingFinalized) {
       await markRecordingFailed(
         'finalization_failed',
-        'Recording could not be finalized safely.',
+        _recordingFinalizationError ??
+            'Recording could not be finalized safely.',
       );
       return false;
     } else if (kIsWeb) {
@@ -3132,7 +3151,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     final shouldMutateRoom = _hasClaimedSession;
 
     try {
-      _stopLoopbackConnection();
+      await _stopLoopbackConnection();
       _studentReconnectTimer?.cancel();
       _studentReconnectTimer = null;
       _participantHeartbeatTimer?.cancel();

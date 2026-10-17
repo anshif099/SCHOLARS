@@ -42,7 +42,16 @@ public class RecordingMediaTestRunner extends Instrumentation {
             record(directory, "audio-gap", egl.getEglBaseContext(), 6000, 0, true);
             record(directory, "late-audio", egl.getEglBaseContext(), 6000, 3000, false);
             record(directory, "no-audio", egl.getEglBaseContext(), 3000, 4000, false);
-            result.putString("stream", "PASS: audio gap, delayed audio, video-only recording; "
+            record(directory, "format-changes", egl.getEglBaseContext(), 6000, 0, false);
+            MediaRecorderImpl.verifyRecordedAudio(new File(directory, "format-changes.mp4"));
+            boolean missingAudioRejected = false;
+            try {
+                MediaRecorderImpl.verifyRecordedAudio(new File(directory, "no-audio.mp4"));
+            } catch (java.io.IOException expected) {
+                missingAudioRejected = true;
+            }
+            require(missingAudioRejected, "A recording without audio was incorrectly accepted");
+            result.putString("stream", "PASS: audio gap, delayed audio, video-only recording, changing PCM formats; "
                     + "saved video frames decode at both ends. Files: " + directory);
             finish(Activity.RESULT_OK, result);
         } catch (Throwable error) {
@@ -57,11 +66,21 @@ public class RecordingMediaTestRunner extends Instrumentation {
                         int durationMs, int audioStartMs, boolean audioGap) throws Exception {
         File output = new File(directory, name + ".mp4");
         VideoFileRenderer renderer = new VideoFileRenderer(output.getAbsolutePath(), egl, true);
-        long startedAt = SystemClock.elapsedRealtime();
+        // Configure the cold video codec before measuring the capture interval.
+        // onFrame performs synchronous codec setup; MP4 removes the initial
+        // empty lead-in, so including that setup time shortens the saved clip.
+        JavaI420Buffer openingBuffer = JavaI420Buffer.allocate(160, 90);
+        fill(openingBuffer.getDataY(), (byte) 40);
+        fill(openingBuffer.getDataU(), (byte) 128);
+        fill(openingBuffer.getDataV(), (byte) 128);
+        VideoFrame openingFrame = new VideoFrame(openingBuffer, 0, System.nanoTime());
+        renderer.onFrame(openingFrame);
+        openingFrame.release();
+        long startedAt = System.nanoTime();
         long nextVideo = 0;
         try {
-            while (SystemClock.elapsedRealtime() - startedAt < durationMs) {
-                long elapsed = SystemClock.elapsedRealtime() - startedAt;
+            while ((System.nanoTime() - startedAt) / 1000000L < durationMs) {
+                long elapsed = (System.nanoTime() - startedAt) / 1000000L;
                 if (elapsed >= nextVideo) {
                     JavaI420Buffer buffer = JavaI420Buffer.allocate(160, 90);
                     fill(buffer.getDataY(), (byte) (40 + elapsed / 100 % 160));
@@ -80,9 +99,26 @@ public class RecordingMediaTestRunner extends Instrumentation {
                         pcm[index * 2] = (byte) value;
                         pcm[index * 2 + 1] = (byte) (value >> 8);
                     }
-                    renderer.onWebRtcAudioRecordSamplesReady(
-                            new JavaAudioDeviceModule.AudioSamples(
-                                    AudioFormat.ENCODING_PCM_16BIT, 1, 48000, pcm));
+                    if (name.equals("format-changes") && elapsed < 3000) {
+                        // Playback can arrive before the mic, in stereo float
+                        // at 44.1 kHz; microphone callbacks then switch to mono
+                        // 48 kHz PCM16. AAC must retain one stable format.
+                        ByteBuffer floats = ByteBuffer.allocate(441 * 2 * 4)
+                                .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+                        for (int frame = 0; frame < 441; frame++) {
+                            float value = (float) (0.4 * Math.sin(2 * Math.PI * 440
+                                    * (elapsed / 1000.0 + frame / 44100.0)));
+                            floats.putFloat(value);
+                            floats.putFloat(value);
+                        }
+                        renderer.onWebRtcAudioRecordSamplesReady(
+                                new JavaAudioDeviceModule.AudioSamples(
+                                        AudioFormat.ENCODING_PCM_FLOAT, 2, 44100, floats.array()));
+                    } else {
+                        renderer.onWebRtcAudioRecordSamplesReady(
+                                new JavaAudioDeviceModule.AudioSamples(
+                                        AudioFormat.ENCODING_PCM_16BIT, 1, 48000, pcm));
+                    }
                 }
                 SystemClock.sleep(10);
             }
@@ -111,14 +147,25 @@ public class RecordingMediaTestRunner extends Instrumentation {
             require(video >= 0, "Missing video track: " + file);
             require((audio >= 0) == expectAudio, "Unexpected audio track: " + file);
             long[] videoTimes = trackTimes(extractor, video);
-            require(videoTimes[0] < 500000, "Opening video was discarded: " + file);
-            require(videoTimes[1] > (durationMs - 500) * 1000L, "Ending video is missing: " + file);
+            // A cold emulator may spend over 500 ms initializing its encoder.
+            // Still require opening video before the delayed-audio scenario's
+            // three-second microphone start, catching discarded pending frames.
+            require(videoTimes[0] < 1500000,
+                    "Opening video was discarded (first PTS " + videoTimes[0] + "): " + file);
+            require(videoTimes[1] > (durationMs - 500) * 1000L,
+                    "Ending video is missing (last PTS " + videoTimes[1] + "): " + file);
             if (expectAudio) {
+                MediaFormat audioFormat = extractor.getTrackFormat(audio);
+                require(audioFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE) == 48000
+                                && audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT) == 1,
+                        "Recording audio format changed: " + file);
                 long[] audioTimes = trackTimes(extractor, audio);
                 require(audioTimes[0] >= (audioStartMs - 300) * 1000L,
                         "Audio shifted before capture: " + file);
                 require(audioTimes[1] > (durationMs - 500) * 1000L,
                         "Audio ends early after dropped callbacks: " + file);
+                require(audioTimes[1] < (durationMs + 500) * 1000L,
+                        "Audio timeline extends beyond the video: " + file);
             }
         } finally {
             extractor.release();

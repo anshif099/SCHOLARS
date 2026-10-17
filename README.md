@@ -62,8 +62,9 @@ capture still requires a connected device for verification.
 
 The native Android recorder has a codec test runner for a connected device or
 emulator. It generates video and a tone, simulates a gap in audio callbacks and
-delayed audio startup, and verifies video-only capture plus decoded video frames
-at both ends. From the project root in PowerShell:
+delayed audio startup, changing PCM formats, and verifies video-only capture plus
+decoded video frames at both ends. It also checks that finalization rejects a
+recording without an audio track. From the project root in PowerShell:
 
 ```powershell
 Push-Location android
@@ -75,3 +76,10 @@ adb shell am instrument -w com.cloudwebrtc.webrtc.test/com.cloudwebrtc.webrtc.re
 
 This test exercises the Android encoder and MP4 muxer; it does not use a real
 microphone or test an existing uploaded recording.
+
+Android recording keeps a local audio connection active during capture and
+normalizes AAC input to mono 48 kHz PCM16. A failed AAC setup is released before
+retrying. A recording without saved audio reports an error and retains the local
+video instead of uploading it as a successful class recording. This check detects
+missing audio packets; it does not detect a track containing only silence.
+Opening recorded media restores Android's normal media audio mode after a call.

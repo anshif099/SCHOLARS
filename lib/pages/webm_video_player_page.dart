@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import '../services/recorded_media_audio.dart';
 
 /// Plays a WebM (or any URL) video inside an embedded WebView.
 ///
@@ -54,7 +55,9 @@ class _WebmVideoPlayerPageState extends State<WebmVideoPlayerPage> {
     }
   }
 
-  void _initWebView() {
+  Future<void> _initWebView() async {
+    await prepareRecordedMediaAudio();
+    if (!mounted) return;
     _loadTimer?.cancel();
     _videoWasReady = false;
     _errorMessage = null;

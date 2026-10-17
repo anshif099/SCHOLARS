@@ -13,6 +13,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 import '../services/video_web_helper.dart';
+import '../services/recorded_media_audio.dart';
 import '../theme/app_theme.dart';
 import '../components/universal_image.dart';
 import '../components/drawing_overlay.dart';
@@ -226,6 +227,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   }
 
   Future<void> _initializePlayer() async {
+    await prepareRecordedMediaAudio();
+    if (!mounted) return;
     // Prefer URL-based playback (Firebase Storage)
     if (widget.videoUrl != null && widget.videoUrl!.isNotEmpty) {
       await _initFromUrl(widget.videoUrl!);

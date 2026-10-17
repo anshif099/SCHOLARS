@@ -1012,7 +1012,7 @@ public class GetUserMediaImpl {
         }
     }
 
-    void stopRecording(Integer id, String albumName) {
+    void stopRecording(Integer id, String albumName) throws Exception {
         try {
             FallbackAudioRecorder fallback = fallbackAudioRecorders.remove(id);
             if (fallback != null) {
@@ -1073,7 +1073,8 @@ public class GetUserMediaImpl {
                 }
             }
         } catch(Exception e){
-
+            Log.e(TAG, "Recording could not be finalized with audio", e);
+            throw e;
         }
 
     }
