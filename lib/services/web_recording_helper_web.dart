@@ -63,11 +63,11 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
   }
 
   @override
-  void start(
+  Future<void> start(
     dynamic mediaRecorder,
     dynamic stream, {
     List<dynamic>? remoteStreams,
-  }) {
+  }) async {
     _chunks.clear();
     _recordedBlob = null;
     _nativeRecorder = null;
@@ -89,9 +89,13 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
         final audioContext = web.AudioContext();
         _audioContext = audioContext;
 
-        // A suspended Web Audio graph produces a valid video with silent
-        // audio. Recording starts from a user tap, so resume it immediately.
-        audioContext.resume();
+        // Do not start the recorder until the audio graph is live. Calling
+        // resume without awaiting it can create a valid video with silent
+        // audio on browsers that resume asynchronously (notably mobile).
+        await audioContext.resume().toDart;
+        if (audioContext.state != 'running') {
+          throw StateError('Web Audio did not enter the running state.');
+        }
 
         final destination = audioContext.createMediaStreamDestination();
         _destination = destination;
@@ -154,6 +158,17 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
       // Fallback
       try {
         if (stream is MediaStreamWeb) {
+          for (final source in _sources) {
+            try {
+              source.disconnect();
+            } catch (_) {}
+          }
+          _sources.clear();
+          try {
+            _audioContext?.close();
+          } catch (_) {}
+          _audioContext = null;
+          _destination = null;
           _startNativeRecorder(stream.jsStream, mimeType);
         } else {
           rethrow;

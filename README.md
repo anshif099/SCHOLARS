@@ -45,3 +45,27 @@ For a device check, test teacher and student on separate mobile networks,
 then repeat with two students, a student rejoin, and a teacher end. Finish a
 teacher recording and verify its `recorded_classes` entry reaches `ready`
 with a working `video_url`.
+
+To check saved web recordings in Chrome on Windows, run
+`powershell -ExecutionPolicy Bypass -File tool/test_recording_web.ps1`.
+The test records a generated tone and video, decodes the saved file, checks audio
+at the beginning, middle, and end, and seeks to a video frame near the end.
+The runner temporarily enables generated audio in headless Chrome and works
+around Flutter's Windows CanvasKit test-server path issue. Android microphone
+capture still requires a connected device for verification.
+
+The native Android recorder has a codec test runner for a connected device or
+emulator. It generates video and a tone, simulates a gap in audio callbacks and
+delayed audio startup, and verifies video-only capture plus decoded video frames
+at both ends. From the project root in PowerShell:
+
+```powershell
+Push-Location android
+.\gradlew.bat :flutter_webrtc:assembleDebugAndroidTest '-PrecordingTestRunner=com.cloudwebrtc.webrtc.record.RecordingMediaTestRunner'
+Pop-Location
+adb install -r -t build/flutter_webrtc/outputs/apk/androidTest/debug/flutter_webrtc-debug-androidTest.apk
+adb shell am instrument -w com.cloudwebrtc.webrtc.test/com.cloudwebrtc.webrtc.record.RecordingMediaTestRunner
+```
+
+This test exercises the Android encoder and MP4 muxer; it does not use a real
+microphone or test an existing uploaded recording.

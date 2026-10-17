@@ -2101,7 +2101,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
             .map((r) => r.srcObject)
             .whereType<MediaStream>()
             .toList();
-        _webRecordingHelper.start(
+        await _webRecordingHelper.start(
           _mediaRecorder!,
           _localStream!,
           remoteStreams: remoteStreams,

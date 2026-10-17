@@ -8,7 +8,7 @@ abstract class WebRecordingHelper {
 
   int get recordedSizeBytes;
 
-  void start(
+  Future<void> start(
     dynamic mediaRecorder,
     dynamic stream, {
     List<dynamic>? remoteStreams,

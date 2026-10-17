@@ -10,12 +10,13 @@ class StubWebRecordingHelper implements WebRecordingHelper {
   int get recordedSizeBytes => 0;
 
   @override
-  void start(
+  Future<void> start(
     dynamic mediaRecorder,
     dynamic stream, {
     List<dynamic>? remoteStreams,
   }) {
     // No-op on native platforms
+    return Future<void>.value();
   }
 
   @override

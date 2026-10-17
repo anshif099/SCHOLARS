@@ -21,6 +21,14 @@ import org.webrtc.audio.JavaAudioDeviceModule;
 import org.webrtc.audio.JavaAudioDeviceModule.SamplesReadyCallback;
 
 import java.io.IOException;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.EOFException;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.nio.ByteBuffer;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -30,14 +38,16 @@ import java.util.concurrent.atomic.AtomicInteger;
 class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
     private static final String TAG = "VideoFileRenderer";
     private static final long RELEASE_TIMEOUT_MS = 5000;
-    // Audio callbacks are delivered on a separate WebRTC thread. Give the
-    // audio encoder time to publish its format before falling back to video
-    // only, since MediaMuxer cannot add a track after it has started.
-    private static final long AUDIO_TRACK_START_TIMEOUT_MS = 2000;
     private static final long AUDIO_DRAIN_TIMEOUT_US = 0L;
     private static final long AUDIO_FINAL_DRAIN_TIMEOUT_US = 10000L;
     private static final int AUDIO_FINAL_DRAIN_MAX_TRIES = 200;
     private final Object muxerLock = new Object();
+    private final long recordingStartNs = System.nanoTime();
+    // Keep encoded samples on disk until both track formats are known. This
+    // preserves video when microphone callbacks start late or never arrive,
+    // without retaining a whole silent class in memory.
+    private final File pendingSamplesFile;
+    private DataOutputStream pendingSamples;
     private final HandlerThread renderThread;
     private final Handler renderThreadHandler;
     private final HandlerThread audioThread;
@@ -64,7 +74,6 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
     private static final long FRAME_INTERVAL_NS = 1000000000L / FRAME_RATE;
 
     private final MediaMuxer mediaMuxer;
-    private final boolean withAudio;
     private MediaCodec encoder;
     private final MediaCodec.BufferInfo bufferInfo;
     private MediaCodec.BufferInfo audioBufferInfo;
@@ -77,8 +86,6 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
     private Surface surface;
     private MediaCodec audioEncoder;
     private volatile boolean audioTrackUnavailable = false;
-    private boolean videoOnlyFallbackScheduled = false;
-    private Runnable videoOnlyFallbackTask;
 
     VideoFileRenderer(String outputFile, final EglBase.Context sharedContext, boolean withAudio) throws IOException {
         renderThread = new HandlerThread(TAG + "RenderThread");
@@ -94,13 +101,14 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
         }
         bufferInfo = new MediaCodec.BufferInfo();
         this.sharedContext = sharedContext;
-        this.withAudio = withAudio;
 
         // Create a MediaMuxer.  We can't add the video track and start() the muxer here,
         // because our MediaFormat doesn't have the Magic Goodies.  These can only be
         // obtained from the encoder after it has started processing data.
         mediaMuxer = new MediaMuxer(outputFile,
                 MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+        pendingSamplesFile = File.createTempFile(
+                "recording-pending-", ".bin", new File(outputFile).getParentFile());
 
         audioTrackIndex = withAudio ? -1 : 0;
     }
@@ -191,15 +199,12 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
                     && nowNs - lastRenderedFrameWallClockNs < FRAME_INTERVAL_NS) {
                 return;
             }
-            if (firstRenderedFrameWallClockNs == 0L) {
-                firstRenderedFrameWallClockNs = nowNs;
-            }
             lastRenderedFrameWallClockNs = nowNs;
 
             if (frameDrawer == null) {
                 frameDrawer = new VideoFrameDrawer();
             }
-            long presentationTimeNs = nowNs - firstRenderedFrameWallClockNs;
+            long presentationTimeNs = nowNs - recordingStartNs;
             if (lastVideoPresentationTimeNs >= 0L
                     && presentationTimeNs <= lastVideoPresentationTimeNs) {
                 presentationTimeNs = lastVideoPresentationTimeNs + FRAME_INTERVAL_NS;
@@ -221,10 +226,6 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
     // Start Signify modification
     void release() {
         isRunning = false;
-        if (videoOnlyFallbackTask != null) {
-            renderThreadHandler.removeCallbacks(videoOnlyFallbackTask);
-            videoOnlyFallbackTask = null;
-        }
         if (audioThreadHandler != null) {
             CountDownLatch audioLatch = new CountDownLatch(1);
             audioThreadHandler.post(() -> {
@@ -269,10 +270,11 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
                         try {
                             encoder.signalEndOfInputStream();
                             drainEncoder();
-                            // A very short recording may stop before the
-                            // audio grace period expires. Still finalize the
-                            // available video track instead of leaving an
-                            // empty MP4 behind.
+                            // If no audio samples arrived during the complete
+                            // recording, finalize a video-only MP4. Do not
+                            // choose this before stop: microphone callbacks
+                            // can start late on Android and MediaMuxer cannot
+                            // add an audio track after it starts.
                             startVideoOnlyMuxerIfNeeded();
                             drainEncoder();
                         } catch (Exception e) {
@@ -305,6 +307,7 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
                         muxerStarted = false;
                     }
                     mediaMuxer.release();
+                    discardPendingSamples();
                 }
                 renderThread.quit();
             } finally {
@@ -326,14 +329,9 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
 
     private boolean encoderStarted = false;
     private volatile boolean muxerStarted = false;
-    private long videoFrameStartUs = 0L;
-    private boolean hasVideoFrameStart = false;
     private long lastRenderedFrameWallClockNs = 0L;
-    private long firstRenderedFrameWallClockNs = 0L;
     private long lastVideoPresentationTimeNs = -1L;
     private long lastWrittenVideoPresentationTimeUs = -1L;
-    private long audioFrameStartUs = 0L;
-    private boolean hasAudioFrameStart = false;
     private long lastWrittenAudioPresentationTimeUs = -1L;
 
     private void startEncoderIfNeeded() {
@@ -345,27 +343,20 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
     }
 
     private void maybeStartMuxer() {
-        boolean scheduleVideoOnlyFallback = false;
         synchronized (muxerLock) {
             if (muxerStarted || trackIndex == -1) {
                 return;
             }
             if (audioTrackIndex == -1) {
-                if (withAudio && !videoOnlyFallbackScheduled) {
-                    videoOnlyFallbackScheduled = true;
-                    scheduleVideoOnlyFallback = true;
-                } else {
-                    return;
-                }
+                // Wait for audio's format callback. Video-only fallback is
+                // selected during release, after the entire recording had a
+                // chance to receive microphone samples.
+                return;
             } else {
                 mediaMuxer.start();
                 muxerStarted = true;
+                flushPendingSamples();
             }
-        }
-        if (scheduleVideoOnlyFallback) {
-            videoOnlyFallbackTask = this::startVideoOnlyMuxerIfNeeded;
-            renderThreadHandler.postDelayed(
-                    videoOnlyFallbackTask, AUDIO_TRACK_START_TIMEOUT_MS);
         }
     }
 
@@ -381,15 +372,77 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
             audioTrackIndex = 0;
             mediaMuxer.start();
             muxerStarted = true;
+            flushPendingSamples();
         }
     }
 
     private void writeSampleDataSafely(int currentTrackIndex, ByteBuffer encodedData, MediaCodec.BufferInfo currentBufferInfo) {
         synchronized (muxerLock) {
             if (!muxerStarted) {
+                try {
+                    if (pendingSamples == null) {
+                        pendingSamples = new DataOutputStream(new BufferedOutputStream(
+                                new FileOutputStream(pendingSamplesFile)));
+                    }
+                    byte[] data = new byte[currentBufferInfo.size];
+                    encodedData.duplicate().get(data);
+                    pendingSamples.writeInt(currentTrackIndex);
+                    pendingSamples.writeInt(data.length);
+                    pendingSamples.writeLong(currentBufferInfo.presentationTimeUs);
+                    pendingSamples.writeInt(currentBufferInfo.flags);
+                    pendingSamples.write(data);
+                } catch (IOException e) {
+                    throw new IllegalStateException("Could not preserve pending recording samples", e);
+                }
                 return;
             }
             mediaMuxer.writeSampleData(currentTrackIndex, encodedData, currentBufferInfo);
+        }
+    }
+
+    // Called under muxerLock, before newer samples can be written.
+    private void flushPendingSamples() {
+        if (pendingSamples == null) return;
+        try {
+            pendingSamples.close();
+            pendingSamples = null;
+            try (DataInputStream input = new DataInputStream(new BufferedInputStream(
+                    new FileInputStream(pendingSamplesFile)))) {
+                while (true) {
+                    int pendingTrack;
+                    try {
+                        pendingTrack = input.readInt();
+                    } catch (EOFException end) {
+                        break;
+                    }
+                    int size = input.readInt();
+                    long timeUs = input.readLong();
+                    int flags = input.readInt();
+                    byte[] data = new byte[size];
+                    input.readFully(data);
+                    MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+                    info.set(0, size, timeUs, flags);
+                    mediaMuxer.writeSampleData(pendingTrack, ByteBuffer.wrap(data), info);
+                }
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not restore pending recording samples", e);
+        } finally {
+            discardPendingSamples();
+        }
+    }
+
+    private void discardPendingSamples() {
+        if (pendingSamples != null) {
+            try {
+                pendingSamples.close();
+            } catch (IOException e) {
+                Log.w(TAG, "Could not close pending samples", e);
+            }
+            pendingSamples = null;
+        }
+        if (pendingSamplesFile.exists() && !pendingSamplesFile.delete()) {
+            Log.w(TAG, "Could not delete pending samples");
         }
     }
 
@@ -431,12 +484,8 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
                     // It's usually necessary to adjust the ByteBuffer values to match BufferInfo.
                     encodedData.position(bufferInfo.offset);
                     encodedData.limit(bufferInfo.offset + bufferInfo.size);
-                    if (muxerStarted) {
-                        if (!hasVideoFrameStart) {
-                            videoFrameStartUs = bufferInfo.presentationTimeUs;
-                            hasVideoFrameStart = true;
-                        }
-                        bufferInfo.presentationTimeUs -= videoFrameStartUs;
+                    if (bufferInfo.size > 0
+                            && (bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
                         if (bufferInfo.presentationTimeUs <= lastWrittenVideoPresentationTimeUs) {
                             bufferInfo.presentationTimeUs =
                                     lastWrittenVideoPresentationTimeUs + 1000000L / FRAME_RATE;
@@ -507,12 +556,8 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
                     // It's usually necessary to adjust the ByteBuffer values to match BufferInfo.
                     encodedData.position(audioBufferInfo.offset);
                     encodedData.limit(audioBufferInfo.offset + audioBufferInfo.size);
-                    if (muxerStarted && !audioTrackUnavailable && audioBufferInfo.size > 0) {
-                        if (!hasAudioFrameStart) {
-                            audioFrameStartUs = audioBufferInfo.presentationTimeUs;
-                            hasAudioFrameStart = true;
-                        }
-                        audioBufferInfo.presentationTimeUs -= audioFrameStartUs;
+                    if (!audioTrackUnavailable && audioBufferInfo.size > 0
+                            && (audioBufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
                         if (audioBufferInfo.presentationTimeUs <= lastWrittenAudioPresentationTimeUs) {
                             audioBufferInfo.presentationTimeUs =
                                     lastWrittenAudioPresentationTimeUs + 1L;
@@ -537,6 +582,7 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
     public void onWebRtcAudioRecordSamplesReady(JavaAudioDeviceModule.AudioSamples audioSamples) {
         if (!isRunning || audioTrackUnavailable || audioThreadHandler == null)
             return;
+        final long capturedAtUs = (System.nanoTime() - recordingStartNs) / 1000L;
         // Keep at most one second of 10 ms PCM callbacks queued on slow devices.
         if (pendingAudioSamples.incrementAndGet() > 100) {
             pendingAudioSamples.decrementAndGet();
@@ -567,8 +613,12 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
                 buffer.clear();
                 byte[] data = audioSamples.getData();
                 buffer.put(data);
-                audioEncoder.queueInputBuffer(bufferIndex, 0, data.length, presTime, 0);
-                presTime += calculateAudioDurationUs(audioSamples, data.length);
+                // Advance with capture time when callbacks are dropped or the
+                // encoder is busy. Counting only accepted PCM compresses the
+                // audio timeline and leaves a silent tail on long videos.
+                long sampleTimeUs = Math.max(presTime, capturedAtUs);
+                audioEncoder.queueInputBuffer(bufferIndex, 0, data.length, sampleTimeUs, 0);
+                presTime = sampleTimeUs + calculateAudioDurationUs(audioSamples, data.length);
             }
             drainAudio(false);
           } catch (Exception e) {

@@ -29,11 +29,14 @@ android {
     if (project.android.hasProperty("namespace")) {
         namespace 'com.cloudwebrtc.webrtc'
     }
-    compileSdkVersion 31
+    compileSdkVersion project.hasProperty('recordingTestRunner') ? 36 : 31
 
     defaultConfig {
         minSdkVersion 21
-        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+        if (project.hasProperty('recordingTestRunner')) {
+            targetSdkVersion 36
+        }
+        testInstrumentationRunner project.findProperty('recordingTestRunner') ?: 'androidx.test.runner.AndroidJUnitRunner'
         consumerProguardFiles 'proguard-rules.pro'
     }
 
