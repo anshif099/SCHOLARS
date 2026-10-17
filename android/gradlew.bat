@@ -11,6 +11,9 @@ if "%OS%"=="Windows_NT" setlocal
 @rem Work around JBR Windows append locks in AGP's CMake timing logs.
 @rem This must be set before Java starts; Gradle system properties are too late.
 set "JAVA_TOOL_OPTIONS=%JAVA_TOOL_OPTIONS% -Djbr.java.io.use.nio=false"
+@rem Existing daemons may have started without the JBR workaround. Do not reuse
+@rem them: Gradle applies JAVA_TOOL_OPTIONS too late in an already running JVM.
+set "GRADLE_OPTS=%GRADLE_OPTS% -Dorg.gradle.daemon=false"
 
 @rem Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
 set DEFAULT_JVM_OPTS=

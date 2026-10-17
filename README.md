@@ -4,9 +4,10 @@ Distance-learning application for Scholars Academy.
 
 On Windows, the Gradle launcher sets `-Djbr.java.io.use.nio=false` at JVM startup
 to avoid JetBrains Runtime file-lock errors while Android Gradle Plugin appends
-to generated CMake timing logs. After pulling this change, stop existing Gradle
-daemons once with `android\gradlew.bat -p android --stop`, then use
-`flutter build appbundle` as usual.
+to generated CMake timing logs. The Windows launcher also disables daemon reuse
+so a daemon started without that JVM workaround cannot cause the same lock again.
+Use `flutter build appbundle` as usual. A fresh Gradle process adds some startup
+time to Windows builds.
 
 ## Reliable live-class networking
 
