@@ -132,6 +132,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   bool _isCleaningUp = false;
   bool _isRecording = false;
   bool _isFrontCamera = true;
+  bool _isSwitchingCamera = false;
   bool _renderersInitialized = false;
   bool _hasClaimedSession = false;
   bool _isProcessing = false;
@@ -2442,15 +2443,107 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   Future<void> _switchCamera() async {
-    if (_localVideoTrack == null) {
+    if (_localVideoTrack == null ||
+        _isSwitchingCamera ||
+        _isCleaningUp ||
+        _hasEndedCall) {
       return;
     }
 
-    await Helper.switchCamera(_localVideoTrack!);
-    if (mounted) {
-      setState(() {
-        _isFrontCamera = !_isFrontCamera;
+    _isSwitchingCamera = true;
+    try {
+      final nextFrontCamera = !_isFrontCamera;
+      if (kIsWeb) {
+        await _switchWebCamera(nextFrontCamera);
+      } else {
+        await Helper.switchCamera(_localVideoTrack!);
+      }
+      if (mounted && !_isCleaningUp && !_hasEndedCall) {
+        setState(() => _isFrontCamera = nextFrontCamera);
+      }
+    } catch (error) {
+      debugPrint('Camera switch failed: $error');
+      if (mounted && !_isCleaningUp && !_hasEndedCall) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Unable to switch camera. Please try again.'),
+          ),
+        );
+      }
+    } finally {
+      _isSwitchingCamera = false;
+    }
+  }
+
+  Future<void> _switchWebCamera(bool frontCamera) async {
+    final stream = _localStream!;
+    final oldTrack = _localVideoTrack!;
+    final oldSettings = oldTrack.getSettings();
+
+    Future<MediaStream> capture(Map<String, dynamic> camera) {
+      return navigator.mediaDevices.getUserMedia(<String, dynamic>{
+        'audio': false,
+        'video': <String, dynamic>{
+          ...camera,
+          'width': <String, dynamic>{'ideal': _callVideoWidth},
+          'height': <String, dynamic>{'ideal': _callVideoHeight},
+          'frameRate': <String, dynamic>{'ideal': _callVideoMaxFrameRate},
+        },
       });
+    }
+
+    Future<void> install(MediaStream captured) async {
+      final track = captured.getVideoTracks().single;
+      if (!mounted || _isCleaningUp || _hasEndedCall) {
+        await track.stop();
+        await captured.dispose();
+        return;
+      }
+      track.enabled = !_isVideoOff;
+      // Update the shared stream before awaiting senders so new peers also
+      // receive the replacement camera. Keep the existing microphone track.
+      for (final previous in stream.getVideoTracks()) {
+        await stream.removeTrack(previous);
+      }
+      await stream.addTrack(track);
+      _localVideoTrack = track;
+      _localRenderer.srcObject = stream;
+      try {
+        for (final session in _peerSessions.values.toList()) {
+          await session.localVideoSender?.replaceTrack(track);
+        }
+      } finally {
+        // The track now belongs to the local stream; release its temporary
+        // capture container without stopping the transferred track.
+        await captured.removeTrack(track);
+        await captured.dispose();
+      }
+    }
+
+    // Mobile Safari needs the current camera released before opening the other.
+    await oldTrack.stop();
+    try {
+      await install(
+        await capture(<String, dynamic>{
+          'facingMode': <String, dynamic>{
+            'exact': frontCamera ? 'user' : 'environment',
+          },
+        }),
+      );
+    } catch (_) {
+      // A missing rear camera or rejected capture must not leave a dead preview.
+      if (_isCleaningUp || _hasEndedCall || !mounted) rethrow;
+      await _localVideoTrack?.stop();
+      final deviceId = oldSettings['deviceId'];
+      await install(
+        await capture(<String, dynamic>{
+          if (deviceId is String && deviceId.isNotEmpty)
+            'deviceId': <String, dynamic>{'exact': deviceId}
+          else
+            'facingMode': _isFrontCamera ? 'user' : 'environment',
+        }),
+      );
+      rethrow;
     }
   }
 
