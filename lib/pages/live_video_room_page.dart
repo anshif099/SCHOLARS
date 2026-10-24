@@ -19,6 +19,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../services/web_recording_helper.dart';
 
 import '../services/firebase_upload_auth_service.dart';
+import '../services/recording_upload.dart';
 import '../services/call_manager.dart';
 import '../services/live_class_lifecycle_policy.dart';
 import '../services/live_class_media_policy.dart';
@@ -2167,36 +2168,24 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   Future<void> _saveRecordingNow() async {
-    if (!widget.isTeacher || _isSavingRecording) {
-      return;
-    }
+    if (!widget.isTeacher || _hasEndedCall) return;
+    await _endCall();
+  }
 
-    if (!_hasPendingRecording) {
-      _showSnackBar('Start recording before saving.');
-      return;
-    }
-
-    final videoPath = _localVideoPath;
-    final durationText = _buildRecordingDurationText(
-      _recordingStartTime ?? _callStartedAt,
+  void _queueRecordingUpload(String? videoPath, String durationText) {
+    final ref = _recordedClassRef ??= FirebaseDatabase.instance
+        .ref('recorded_classes')
+        .child(widget.classId)
+        .push();
+    RecordingUpload.enqueue(
+      ref.key!,
+      () => _saveRecordingFile(
+        videoPath,
+        durationText,
+        recordingFinalized: true,
+        showResult: false,
+      ),
     );
-    final recordingFinalized = await _stopTeacherRecording();
-
-    final saved = await _saveRecordingFile(
-      videoPath ?? _localVideoPath,
-      durationText,
-      recordingFinalized: recordingFinalized,
-      showResult: true,
-    );
-
-    if (!saved && mounted) {
-      _showSnackBar(
-        recordingFinalized
-            ? 'Recording save failed. It will retry when the call ends.'
-            : _recordingFinalizationError ??
-                  'Recording could not be finalized.',
-      );
-    }
   }
 
   Future<bool> _saveRecordingFile(
@@ -2691,6 +2680,15 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         ? await _stopTeacherRecording()
         : _recordingFinalized;
 
+    // Upload ownership outlives this route. Only recorder finalization blocks exit.
+    if (shouldAutoSaveRecording && recordingFinalized) {
+      _queueRecordingUpload(videoPath ?? _localVideoPath, durationText);
+    } else if (shouldAutoSaveRecording && !recordingFinalized && mounted) {
+      _showSnackBar(
+        _recordingFinalizationError ?? 'Recording could not be finalized.',
+      );
+    }
+
     // STEP 2: Clean up WebRTC (signals termination to student immediately via node removal)
     try {
       await _cleanupRoomState(
@@ -2699,76 +2697,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     } on TimeoutException {
       debugPrint('Room cleanup timed out after $_roomCleanupTimeout');
       _releaseSession();
-    }
-
-    // STEP 3: Save the recording before leaving the call screen. The upload
-    // method creates the RTDB row first, so the class is visible even if the
-    // Storage upload later fails.
-    if (widget.isTeacher) {
-      if (mounted && (pendingSaveTask != null || shouldAutoSaveRecording)) {
-        setState(() => _statusMessage = 'Saving recording...');
-      }
-      bool saved = true;
-      if (pendingSaveTask != null) {
-        saved = await pendingSaveTask;
-      } else if (shouldAutoSaveRecording) {
-        saved = await _saveRecordingFile(
-          videoPath ?? _localVideoPath,
-          durationText,
-          recordingFinalized: recordingFinalized,
-          showResult: false,
-        );
-      }
-      if (!saved && !recordingFinalized && mounted) {
-        await showDialog<void>(
-          context: context,
-          builder: (dialogContext) => AlertDialog(
-            title: const Text('Recording could not be finalized'),
-            content: Text(
-              _recordingFinalizationError ??
-                  'The recording has been retained, but could not be saved as a playable video.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(dialogContext).pop(),
-                child: const Text('Close'),
-              ),
-            ],
-          ),
-        );
-      }
-      while (!saved && mounted && recordingFinalized) {
-        if (!mounted) break;
-        final retry = await showDialog<bool>(
-          context: context,
-          barrierDismissible: false,
-          builder: (dialogContext) => AlertDialog(
-            title: const Text('Recording was not uploaded'),
-            content: Text(
-              kIsWeb
-                  ? 'Keep this page open and retry to preserve your recording.'
-                  : 'Your recording is kept on this device at ${videoPath ?? _localVideoPath}. Retry after checking your connection.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(dialogContext).pop(false),
-                child: const Text('Leave'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.of(dialogContext).pop(true),
-                child: const Text('Retry upload'),
-              ),
-            ],
-          ),
-        );
-        if (retry != true) break;
-        saved = await _saveRecordingFile(
-          videoPath ?? _localVideoPath,
-          durationText,
-          recordingFinalized: recordingFinalized,
-          showResult: false,
-        );
-      }
     }
 
     if (mounted && Navigator.of(context).canPop()) {
@@ -2825,6 +2753,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
     Future<TaskSnapshot> waitForRecordingUpload(UploadTask uploadTask) async {
       var lastPublishedProgress = -5;
+      TaskState? lastPublishedState;
       Future<void> pendingProgressUpdate = Future<void>.value();
       final progressSubscription = uploadTask.snapshotEvents.listen((snapshot) {
         final totalBytes = snapshot.totalBytes;
@@ -2838,7 +2767,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
           setState(() => _statusMessage = 'Uploading video... $progress%');
         }
 
-        if (progress >= lastPublishedProgress + 5 || progress == 100) {
+        if (progress >= lastPublishedProgress + 5 ||
+            progress == 100 ||
+            snapshot.state != lastPublishedState) {
+          lastPublishedState = snapshot.state;
           lastPublishedProgress = progress;
           pendingProgressUpdate = pendingProgressUpdate
               .catchError((Object error) {
@@ -2846,7 +2778,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
               })
               .then(
                 (_) => updateRecordedClass(<String, dynamic>{
-                  'upload_status': 'uploading',
+                  'upload_status': snapshot.state == TaskState.paused
+                      ? 'paused'
+                      : 'uploading',
                   'upload_progress': progress,
                   'upload_updated_at': DateTime.now().millisecondsSinceEpoch,
                 }),
@@ -2855,7 +2789,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       });
 
       try {
-        return await uploadTask;
+        final job = RecordingUpload.jobs[recordedRef.key];
+        return await (job == null ? uploadTask : job.track(uploadTask));
       } finally {
         await progressSubscription.cancel();
         // Finish queued progress writes before the caller writes the final
@@ -2937,6 +2872,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
           'presentation_version': 2,
         },
         'upload_status': 'preparing',
+        'upload_updated_at': DateTime.now().millisecondsSinceEpoch,
       });
       debugPrint('Initial metadata saved to recorded_classes');
     } catch (e) {
@@ -3965,7 +3901,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
                         _buildControlButton(
                           tooltip: _isSavingRecording
                               ? 'Saving recording'
-                              : 'Save recording',
+                              : 'Save & end class',
                           icon: Icons.save_rounded,
                           color: const Color(0xFF1F7A4D),
                           iconColor: Colors.white,
@@ -5600,7 +5536,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
                             size: 18,
                           ),
                           label: Text(
-                            _isSavingRecording ? 'Saving...' : 'Save Rec',
+                            _isSavingRecording ? 'Saving...' : 'Save & end',
                             style: TextStyle(
                               color: _canSaveRecording
                                   ? Colors.greenAccent

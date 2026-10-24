@@ -28,9 +28,17 @@ import '../components/camera_mic_access_dialog.dart';
 
 bool _isRecordingUploadPending(Map recording) {
   final status = recording['upload_status']?.toString();
-  if (status != 'preparing' && status != 'uploading') {
+  if (!{
+    'preparing',
+    'uploading',
+    'retrying',
+    'paused',
+    'offline',
+  }.contains(status)) {
     return false;
   }
+
+  if (status == 'paused' || status == 'offline') return true;
 
   final rawTimestamp = recording['upload_updated_at'] ?? recording['date'];
   final timestamp = rawTimestamp is int
@@ -1330,14 +1338,19 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
   }
 
   String? _recordingStatusLabel(Map<String, dynamic> recording) {
+    if (_isRecordingUploadPending(recording)) {
+      final progress = recording['upload_progress'] ?? 0;
+      return switch (recording['upload_status']) {
+        'paused' => 'Upload paused ($progress%)',
+        'offline' => 'Offline - upload paused ($progress%)',
+        'retrying' => 'Retrying upload ($progress%)',
+        _ => 'Uploading $progress%',
+      };
+    }
     if (isIOSRecordingPreparationPending(recording)) {
       return 'Preparing for iPhone';
     }
     if (_hasPlayableRecording(recording)) return null;
-
-    if (_isRecordingUploadPending(recording)) {
-      return 'Uploading';
-    }
     return 'Upload failed';
   }
 
@@ -1697,14 +1710,19 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
   }
 
   String? _recordingStatusLabel(Map<dynamic, dynamic> recording) {
+    if (_isRecordingUploadPending(recording)) {
+      final progress = recording['upload_progress'] ?? 0;
+      return switch (recording['upload_status']) {
+        'paused' => 'Upload paused ($progress%)',
+        'offline' => 'Offline - upload paused ($progress%)',
+        'retrying' => 'Retrying upload ($progress%)',
+        _ => 'Uploading $progress%',
+      };
+    }
     if (isIOSRecordingPreparationPending(recording)) {
       return 'Preparing for iPhone';
     }
     if (_hasPlayableRecording(recording)) return null;
-
-    if (_isRecordingUploadPending(recording)) {
-      return 'Uploading';
-    }
     return 'Upload failed';
   }
 

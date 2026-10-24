@@ -2,6 +2,7 @@ package com.academy.scholars
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.Intent
 import android.content.Context
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -23,6 +24,19 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
+            "com.academy.scholars/recording_upload").setMethodCallHandler { call, result ->
+            try {
+                val intent = Intent(this, RecordingUploadService::class.java)
+                when (call.method) {
+                    "start" -> { startForegroundService(intent); result.success(null) }
+                    "stop" -> { stopService(intent); result.success(null) }
+                    else -> result.notImplemented()
+                }
+            } catch (error: Exception) {
+                result.error("UPLOAD_SERVICE_ERROR", error.message, null)
+            }
+        }
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,

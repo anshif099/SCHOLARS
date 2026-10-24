@@ -9,6 +9,7 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../services/firebase_upload_auth_service.dart';
+import '../components/recording_upload_controls.dart';
 import '../services/recording_playback_policy.dart';
 import '../theme/app_theme.dart';
 import 'landing_page.dart';
@@ -25,9 +26,17 @@ import '../components/camera_mic_access_dialog.dart';
 
 bool _isRecordingUploadPending(Map recording) {
   final status = recording['upload_status']?.toString();
-  if (status != 'preparing' && status != 'uploading') {
+  if (!{
+    'preparing',
+    'uploading',
+    'retrying',
+    'paused',
+    'offline',
+  }.contains(status)) {
     return false;
   }
+
+  if (status == 'paused' || status == 'offline') return true;
 
   final rawTimestamp = recording['upload_updated_at'] ?? recording['date'];
   final timestamp = rawTimestamp is int
@@ -1096,14 +1105,19 @@ class _TeacherDashboardPageState extends State<TeacherDashboardPage> {
   }
 
   String? _recordingStatusLabel(Map<String, dynamic> recording) {
+    if (_isRecordingUploadPending(recording)) {
+      final progress = recording['upload_progress'] ?? 0;
+      return switch (recording['upload_status']) {
+        'paused' => 'Upload paused ($progress%)',
+        'offline' => 'Offline - upload paused ($progress%)',
+        'retrying' => 'Retrying upload ($progress%)',
+        _ => 'Uploading $progress%',
+      };
+    }
     if (isIOSRecordingPreparationPending(recording)) {
       return 'Preparing for iPhone';
     }
     if (_hasPlayableRecording(recording)) return null;
-
-    if (_isRecordingUploadPending(recording)) {
-      return 'Uploading';
-    }
     return 'Upload failed';
   }
 
@@ -1721,35 +1735,41 @@ class _TeacherDashboardPageState extends State<TeacherDashboardPage> {
                             return;
                           }
 
-                          final rawClassId = widget.teacherData['class_id']?.toString() ??
+                          final rawClassId =
+                              widget.teacherData['class_id']?.toString() ??
                               widget.teacherData['key']?.toString() ??
                               'class_1';
                           final sanitizedClassId = rawClassId
                               .trim()
                               .replaceAll(RegExp(r'[.#$\[\]/]'), '_')
                               .replaceAll(RegExp(r'\s+'), '_');
-                          final classId =
-                              sanitizedClassId.isEmpty ? 'class_1' : sanitizedClassId;
+                          final classId = sanitizedClassId.isEmpty
+                              ? 'class_1'
+                              : sanitizedClassId;
 
                           final topic = _topicController.text.trim().isEmpty
                               ? 'General Class'
                               : _topicController.text.trim();
-                          final teacherName = widget.teacherData['name']?.toString();
+                          final teacherName = widget.teacherData['name']
+                              ?.toString();
 
                           try {
                             final classData = <String, dynamic>{
                               'is_live': false,
                               'topic': topic,
                               'teacher_name':
-                                  (teacherName != null && teacherName.trim().isNotEmpty)
-                                      ? teacherName.trim()
-                                      : 'Teacher',
-                              'started_at': DateTime.now().millisecondsSinceEpoch,
+                                  (teacherName != null &&
+                                      teacherName.trim().isNotEmpty)
+                                  ? teacherName.trim()
+                                  : 'Teacher',
+                              'started_at':
+                                  DateTime.now().millisecondsSinceEpoch,
                               'status': 'preparing',
                             };
                             if (_selectedSubjectId != null &&
                                 _selectedSubjectId!.trim().isNotEmpty) {
-                              classData['subject_id'] = _selectedSubjectId!.trim();
+                              classData['subject_id'] = _selectedSubjectId!
+                                  .trim();
                             }
 
                             // Signal the class only after media access succeeds.
@@ -1982,14 +2002,19 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
   }
 
   String? _recordingStatusLabel(Map<dynamic, dynamic> recording) {
+    if (_isRecordingUploadPending(recording)) {
+      final progress = recording['upload_progress'] ?? 0;
+      return switch (recording['upload_status']) {
+        'paused' => 'Upload paused ($progress%)',
+        'offline' => 'Offline - upload paused ($progress%)',
+        'retrying' => 'Retrying upload ($progress%)',
+        _ => 'Uploading $progress%',
+      };
+    }
     if (isIOSRecordingPreparationPending(recording)) {
       return 'Preparing for iPhone';
     }
     if (_hasPlayableRecording(recording)) return null;
-
-    if (_isRecordingUploadPending(recording)) {
-      return 'Uploading';
-    }
     return 'Upload failed';
   }
 
@@ -2816,6 +2841,10 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
+                                if (widget.isTeacher)
+                                  RecordingUploadControls(
+                                    recordingId: rc['key'].toString(),
+                                  ),
                                 ListTile(
                                   contentPadding: const EdgeInsets.fromLTRB(
                                     16,
@@ -2946,9 +2975,7 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
                                           ),
                                         ),
                                         onPressed: () async {
-                                          if (needsIOSRecordingConversion(
-                                            rc,
-                                          )) {
+                                          if (needsIOSRecordingConversion(rc)) {
                                             await FirebaseDatabase.instance
                                                 .ref()
                                                 .child('recorded_classes')
