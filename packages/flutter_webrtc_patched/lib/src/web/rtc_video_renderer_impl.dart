@@ -50,7 +50,15 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
 
   final int _textureId;
 
-  bool mirror = false;
+  bool _mirror = false;
+
+  bool get mirror => _mirror;
+
+  set mirror(bool mirrored) {
+    _mirror = mirrored;
+    final element = findHtmlView();
+    if (element != null) _applyDefaultVideoStyles(element);
+  }
 
   final _subscriptions = <StreamSubscription>[];
 
@@ -454,7 +462,8 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
           final message = error != null && error.message != ''
               ? error.message
               : _kDefaultErrorMessage;
-          print('RTCVideoRenderer: videoElement.onError, code=$codeName, message=$message');
+          print(
+              'RTCVideoRenderer: videoElement.onError, code=$codeName, message=$message');
         }),
       );
 
@@ -469,11 +478,9 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
   }
 
   void _applyDefaultVideoStyles(web.HTMLVideoElement element) {
-    // Flip the video horizontally if is mirrored.
-    if (mirror) {
-      element.style.transform = 'scaleX(-1)';
-    }
-
+    // Always reset the front-camera mirror when switching to the rear camera.
+    // The browser already orients camera frames; never flip the vertical axis.
+    element.style.transform = mirror ? 'scaleX(-1)' : 'none';
     element
       ..style.objectFit = _objectFit
       ..style.border = 'none'

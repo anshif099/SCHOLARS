@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import 'package:dart_webrtc/dart_webrtc.dart';
@@ -49,16 +47,18 @@ class RTCVideoViewState extends State<RTCVideoView> {
 
   @override
   void dispose() {
-    if (mounted) {
-      super.dispose();
-    }
+    videoRenderer.removeListener(_onRendererListener);
+    super.dispose();
   }
 
   @override
   void didUpdateWidget(RTCVideoView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    Timer(
-        Duration(milliseconds: 10), () => videoRenderer.mirror = widget.mirror);
+    if (oldWidget._renderer != videoRenderer) {
+      oldWidget._renderer.removeListener(_onRendererListener);
+      videoRenderer.addListener(_onRendererListener);
+    }
+    videoRenderer.mirror = widget.mirror;
     videoRenderer.objectFit =
         widget.objectFit == RTCVideoViewObjectFit.RTCVideoViewObjectFitContain
             ? 'contain'

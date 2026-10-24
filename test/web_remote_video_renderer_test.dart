@@ -60,4 +60,47 @@ void main() {
     }
     await renderer.dispose();
   });
+  testWidgets(
+    'front-to-rear camera switch clears the existing mirror immediately',
+    (tester) async {
+      final canvas = web.HTMLCanvasElement()
+        ..width = 160
+        ..height = 90;
+      final captured = canvas.captureStream(15);
+      final stream = MediaStreamWeb(captured, 'local');
+      final renderer = RTCVideoRenderer();
+      await renderer.initialize();
+      renderer.srcObject = stream;
+      // HtmlElementView is not attached to the DOM in a widget test. Supply its
+      // video element explicitly to exercise the renderer's actual CSS updates.
+      final element = web.HTMLVideoElement()
+        ..id = 'video_RTCVideoRenderer-${renderer.textureId}';
+      web.document.body!.append(element);
+      Future<void> showCamera(bool front) => tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 320,
+            height: 180,
+            child: RTCVideoView(renderer, mirror: front),
+          ),
+        ),
+      );
+      await showCamera(true);
+      expect(element.style.transform, 'scaleX(-1)');
+      await showCamera(false);
+      expect(element.style.transform, 'none');
+      await showCamera(true);
+      expect(element.style.transform, 'scaleX(-1)');
+      await showCamera(false);
+      expect(element.style.transform, 'none');
+      renderer.srcObject = stream;
+      expect(element.style.transform, 'none');
+      await tester.pumpWidget(const SizedBox.shrink());
+      for (final track in captured.getTracks().toDart) {
+        track.stop();
+      }
+      await renderer.dispose();
+      element.remove();
+    },
+  );
 }
