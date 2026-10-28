@@ -132,6 +132,49 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   bool _hasEndedCall = false;
   bool _isCleaningUp = false;
   bool _isRecording = false;
+  bool _isRecordingPaused = false;
+  bool _changingRecordingPause = false;
+  DateTime? _recordingPausedAt;
+  Duration _recordingPausedDuration = Duration.zero;
+
+  Duration get _recordedElapsed {
+    final start = _recordingStartTime;
+    if (start == null) return Duration.zero;
+    return (_recordingPausedAt ?? DateTime.now()).difference(start) -
+        _recordingPausedDuration;
+  }
+
+  Future<void> _toggleRecordingPause() async {
+    if (!_isRecording || _changingRecordingPause || _hasEndedCall) return;
+    setState(() => _changingRecordingPause = true);
+    final paused = !_isRecordingPaused;
+    try {
+      if (kIsWeb) {
+        await _webRecordingHelper.setPaused(paused);
+      } else {
+        await _mediaRecorder!.setPaused(paused);
+      }
+      final now = DateTime.now();
+      if (paused) {
+        _recordingPausedAt = now;
+      } else {
+        _recordingPausedDuration += now.difference(_recordingPausedAt!);
+        _recordingPausedAt = null;
+      }
+      _isRecordingPaused = paused;
+      if (!paused) {
+        _lastRecordedPresentationState = null;
+        _recordPresentationEvent(hidden: _sharedDocUrl == null, force: true);
+      }
+    } catch (error) {
+      _showSnackBar(
+        'Could not ${paused ? 'pause' : 'resume'} recording: $error',
+      );
+    } finally {
+      if (mounted) setState(() => _changingRecordingPause = false);
+    }
+  }
+
   bool _isFrontCamera = true;
   bool _isSwitchingCamera = false;
   bool _renderersInitialized = false;
@@ -2137,6 +2180,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       }
 
       _recordingStartTime = DateTime.now();
+      _isRecordingPaused = false;
+      _recordingPausedAt = null;
+      _recordingPausedDuration = Duration.zero;
       _recordingFinalized = false;
       _recordingFinalizationError = null;
       _recordedClassRef = null;
@@ -2185,6 +2231,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
         recordingFinalized: true,
         showResult: false,
       ),
+      classId: widget.classId,
+      subjectId: widget.subjectId,
+      participantId: widget.participantId,
+      title: widget.topic,
     );
   }
 
@@ -3385,7 +3435,9 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       return '0 mins';
     }
 
-    final elapsed = DateTime.now().difference(startedAt);
+    final elapsed = startedAt == _recordingStartTime
+        ? _recordedElapsed
+        : DateTime.now().difference(startedAt);
     if (elapsed.inHours > 0) {
       return '${elapsed.inHours}h ${elapsed.inMinutes.remainder(60)}m';
     }
@@ -3397,7 +3449,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
   String _formattedRecordingTime() {
     if (_recordingStartTime == null) return '00:00';
-    final duration = DateTime.now().difference(_recordingStartTime!);
+    final duration = _recordedElapsed;
     final minutes = duration.inMinutes.remainder(60).toString().padLeft(2, '0');
     final seconds = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
     final hours = duration.inHours;
@@ -3649,7 +3701,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
                               ),
                               const SizedBox(width: 4),
                               Text(
-                                'REC ${_formattedRecordingTime()}',
+                                '${_isRecordingPaused ? 'PAUSED' : 'REC'} ${_formattedRecordingTime()}',
                                 style: GoogleFonts.poppins(
                                   color: Colors.white,
                                   fontWeight: FontWeight.bold,
@@ -3847,6 +3899,24 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
                           enabled: _canStartRecording,
                           dimWhenDisabled: !_isRecording,
                           onTap: _startRecording,
+                        ),
+                      if (widget.isTeacher &&
+                          _isRecording &&
+                          (kIsWeb ||
+                              defaultTargetPlatform == TargetPlatform.android))
+                        _buildControlButton(
+                          tooltip: _isRecordingPaused
+                              ? 'Resume recording'
+                              : 'Pause recording',
+                          icon: _isRecordingPaused
+                              ? Icons.play_arrow_rounded
+                              : Icons.pause_rounded,
+                          color: _isRecordingPaused
+                              ? Colors.orange
+                              : controlSurfaceColor,
+                          iconColor: Colors.white,
+                          enabled: !_changingRecordingPause && !_hasEndedCall,
+                          onTap: _toggleRecordingPause,
                         ),
                       _buildControlButton(
                         tooltip: kIsWeb
@@ -4163,6 +4233,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     final recordingStart = _recordingStartTime;
     if (!widget.isTeacher ||
         recordingStart == null ||
+        _isRecordingPaused ||
         (!force && !_isRecording)) {
       return;
     }
@@ -4181,10 +4252,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     }
 
     final event = <String, dynamic>{
-      'offset_ms': max(
-        0,
-        DateTime.now().difference(recordingStart).inMilliseconds,
-      ),
+      'offset_ms': max(0, _recordedElapsed.inMilliseconds),
       'sequence': _recordingPresentationEvents.length,
       'action': action,
     };
@@ -4373,6 +4441,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   bool get _canRecordPresentationAction =>
       widget.isTeacher &&
       _isRecording &&
+      !_isRecordingPaused &&
       _recordingStartTime != null &&
       _sharedDocUrl != null;
 
@@ -4381,10 +4450,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     if (!_canRecordPresentationAction || recordingStart == null) return;
 
     _recordingPresentationEvents.add(<String, dynamic>{
-      'offset_ms': max(
-        0,
-        DateTime.now().difference(recordingStart).inMilliseconds,
-      ),
+      'offset_ms': max(0, _recordedElapsed.inMilliseconds),
       'sequence': _recordingPresentationEvents.length,
       'action': action,
       'url': _sharedDocUrl,

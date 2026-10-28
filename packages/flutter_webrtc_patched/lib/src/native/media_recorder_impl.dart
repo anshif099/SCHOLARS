@@ -14,6 +14,13 @@ class MediaRecorderNative extends MediaRecorder {
   final _recorderId = _random.nextInt(0x7FFFFFFF);
   var _isStarted = false;
   final String? _albumName;
+  Future<void> setPaused(bool paused) async {
+    if (!_isStarted) throw StateError('Media recorder not started');
+    await WebRTC.invokeMethod('setRecordingPaused', {
+      'recorderId': _recorderId,
+      'paused': paused,
+    });
+  }
 
   @override
   Future<void> start(
@@ -50,8 +57,7 @@ class MediaRecorderNative extends MediaRecorder {
       'path': path,
       if (audioChannels.length == 1) 'audioChannel': audioChannels.first.index,
       if (audioChannels.length > 1)
-        'audioChannels':
-            audioChannels.map((channel) => channel.index).toList(),
+        'audioChannels': audioChannels.map((channel) => channel.index).toList(),
       if (videoTrack != null) 'videoTrackId': videoTrack.id,
       'recorderId': _recorderId,
       'peerConnectionId': videoTrack is MediaStreamTrackNative

@@ -792,6 +792,16 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
           resultError("startRecordToFile", e.getMessage(), result);
         }
         break;
+      case "setRecordingPaused": {
+        try {
+          getUserMediaImpl.setRecordingPaused(call.argument("recorderId"),
+              Boolean.TRUE.equals(call.argument("paused")));
+          result.success(null);
+        } catch (Exception e) {
+          resultError("setRecordingPaused", e.getMessage(), result);
+        }
+        break;
+      }
       case "stopRecordToFile":
         Integer recorderId = call.argument("recorderId");
         String albumName = call.argument("albumName");

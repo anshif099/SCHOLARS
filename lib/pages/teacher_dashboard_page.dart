@@ -10,6 +10,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../services/firebase_upload_auth_service.dart';
 import '../components/recording_upload_controls.dart';
+import '../components/recording_upload_summary.dart';
 import '../services/recording_playback_policy.dart';
 import '../theme/app_theme.dart';
 import 'landing_page.dart';
@@ -332,6 +333,30 @@ class _TeacherDashboardPageState extends State<TeacherDashboardPage> {
                       : const Center(child: Text('Coming Soon')),
                 ),
               ],
+            ),
+          ),
+          Positioned(
+            left: 16,
+            right: 16,
+            bottom: isKeyboardVisible ? 12 : 125,
+            child: SafeArea(
+              child: RecordingUploadSummary(
+                participantId: widget.teacherData['key']?.toString() ?? '',
+                onOpen: (job) {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => SubjectRecordingsPage(
+                        subjectName: 'Class videos',
+                        isTeacher: true,
+                        classId: job.classId!,
+                        participantId:
+                            widget.teacherData['key']?.toString() ?? '',
+                        subjectKey: job.subjectId ?? '',
+                      ),
+                    ),
+                  );
+                },
+              ),
             ),
           ),
           // Glassmorphism Bottom Bar

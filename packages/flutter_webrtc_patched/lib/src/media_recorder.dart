@@ -13,6 +13,13 @@ class MediaRecorder extends rtc.MediaRecorder {
             : MediaRecorderNative(albumName: albumName);
 
   final rtc.MediaRecorder _delegate;
+  Future<void> setPaused(bool paused) async {
+    final delegate = _delegate;
+    if (delegate is! MediaRecorderNative) {
+      throw UnsupportedError('Use the browser recording helper');
+    }
+    await delegate.setPaused(paused);
+  }
 
   @override
   Future<void> start(

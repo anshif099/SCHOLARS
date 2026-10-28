@@ -4,6 +4,9 @@ WebRecordingHelper getHelper() => StubWebRecordingHelper();
 
 class StubWebRecordingHelper implements WebRecordingHelper {
   @override
+  Future<void> setPaused(bool paused) async {}
+
+  @override
   String get recordedMimeType => 'video/mp4';
 
   @override

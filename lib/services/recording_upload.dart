@@ -28,6 +28,12 @@ class RecordingUpload extends ChangeNotifier {
   Future<void> _taskChanges = Future<void>.value();
 
   static final Map<String, RecordingUpload> jobs = {};
+  static final recent = ValueNotifier<List<RecordingUpload>>([]);
+  String? classId;
+  String? subjectId;
+  String? participantId;
+  String title = 'Class recording';
+  bool completed = false;
   static const _channel = MethodChannel(
     'com.academy.scholars/recording_upload',
   );
@@ -48,11 +54,23 @@ class RecordingUpload extends ChangeNotifier {
       ? 'Upload failed — retry'
       : 'Uploading $progress%';
 
-  static RecordingUpload enqueue(String id, Future<bool> Function() save) {
+  static RecordingUpload enqueue(
+    String id,
+    Future<bool> Function() save, {
+    String? classId,
+    String? subjectId,
+    String? participantId,
+    String title = 'Class recording',
+  }) {
     final existing = jobs[id];
     if (existing != null) return existing;
     final job = RecordingUpload._(id, save);
+    job.classId = classId;
+    job.subjectId = subjectId;
+    job.participantId = participantId;
+    job.title = title;
     jobs[id] = job;
+    recent.value = [...recent.value.where((item) => !item.completed), job];
     unawaited(job.start());
     return job;
   }
@@ -70,6 +88,7 @@ class RecordingUpload extends ChangeNotifier {
     if (running) return;
     running = true;
     failed = false;
+    completed = false;
     notifyListeners();
     await _keepAlive(true);
     final connection = _connections().listen((connected) {
@@ -80,7 +99,11 @@ class RecordingUpload extends ChangeNotifier {
     try {
       final saved = await _save();
       failed = !saved;
-      if (saved) jobs.remove(id);
+      if (saved) {
+        completed = true;
+        progress = 100;
+        jobs.remove(id);
+      }
     } catch (error) {
       failed = true;
       debugPrint('Background recording upload: $error');

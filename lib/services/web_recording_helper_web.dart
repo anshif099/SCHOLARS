@@ -271,6 +271,17 @@ class WebRecordingHelperImpl implements WebRecordingHelper {
   }
 
   @override
+  Future<void> setPaused(bool paused) async {
+    final recorder = _nativeRecorder;
+    if (recorder == null) throw StateError('Recording has not started');
+    if (paused) {
+      recorder.pause();
+    } else {
+      recorder.resume();
+    }
+  }
+
+  @override
   Future<dynamic> stop() async {
     final recorder = _nativeRecorder;
     if (recorder == null) return null;

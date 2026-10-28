@@ -44,6 +44,21 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
     private static final int AUDIO_FINAL_DRAIN_MAX_TRIES = 200;
     private final Object muxerLock = new Object();
     private final long recordingStartNs = System.nanoTime();
+    private boolean recordingPaused = false;
+    private long pauseStartedNs = 0L;
+    private long pausedDurationNs = 0L;
+
+    public synchronized void setPaused(boolean paused) {
+        if (recordingPaused == paused) return;
+        long now = System.nanoTime();
+        if (paused) pauseStartedNs = now;
+        else pausedDurationNs += now - pauseStartedNs;
+        recordingPaused = paused;
+    }
+
+    private synchronized long recordingTimeNs() {
+        return recordingPaused ? -1L : System.nanoTime() - recordingStartNs - pausedDurationNs;
+    }
     // Keep encoded samples on disk until both track formats are known. This
     // preserves video when microphone callbacks start late or never arrive,
     // without retaining a whole silent class in memory.
@@ -152,7 +167,7 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
     public void onFrame(VideoFrame frame) {
         // Retained camera buffers must never accumulate behind a slow encoder.
         // A long class otherwise exhausts GPU/camera memory and kills the call.
-        if (!isRunning || !framePending.compareAndSet(false, true)) return;
+        if (!isRunning || recordingTimeNs() < 0 || !framePending.compareAndSet(false, true)) return;
         frame.retain();
         if (outputFileWidth == -1) {
             setOutputSize(frame);
@@ -205,7 +220,8 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
             if (frameDrawer == null) {
                 frameDrawer = new VideoFrameDrawer();
             }
-            long presentationTimeNs = nowNs - recordingStartNs;
+            long presentationTimeNs = recordingTimeNs();
+            if (presentationTimeNs < 0) return;
             if (lastVideoPresentationTimeNs >= 0L
                     && presentationTimeNs <= lastVideoPresentationTimeNs) {
                 presentationTimeNs = lastVideoPresentationTimeNs + FRAME_INTERVAL_NS;
@@ -597,7 +613,9 @@ class VideoFileRenderer implements VideoSink, SamplesReadyCallback {
             Log.e(TAG, "Unsupported recording audio input", error);
             return;
         }
-        final long capturedAtUs = (System.nanoTime() - recordingStartNs) / 1000L;
+        final long capturedAtNs = recordingTimeNs();
+        if (capturedAtNs < 0) return;
+        final long capturedAtUs = capturedAtNs / 1000L;
         // Keep at most one second of 10 ms PCM callbacks queued on slow devices.
         if (pendingAudioSamples.incrementAndGet() > 100) {
             pendingAudioSamples.decrementAndGet();

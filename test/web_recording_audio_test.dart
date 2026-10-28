@@ -12,7 +12,7 @@ import 'package:web/web.dart' as web;
 
 void main() {
   test(
-    'web recording retains video and audio through its end',
+    'web recording retains audio across pause and resume and excludes paused time',
     () async {
       final context = web.AudioContext();
       final destination = context.createMediaStreamDestination();
@@ -37,12 +37,17 @@ void main() {
       final recorder = WebRecordingHelper();
       try {
         await recorder.start(null, MediaStreamWeb(stream, 'local'));
-        await Future<void>.delayed(const Duration(seconds: 3));
+        await Future<void>.delayed(const Duration(milliseconds: 1500));
+        await recorder.setPaused(true);
+        await Future<void>.delayed(const Duration(seconds: 2));
+        await recorder.setPaused(false);
+        await Future<void>.delayed(const Duration(milliseconds: 1500));
         final blob = await recorder.stop() as web.Blob;
         expect(blob.size, greaterThan(0));
         final data = await blob.arrayBuffer().toDart;
         final audio = await context.decodeAudioData(data).toDart;
         expect(audio.duration, greaterThan(2.5));
+        expect(audio.duration, lessThan(4));
         final samples = audio.getChannelData(0).toDart;
 
         double rms(double startFraction, double endFraction) {

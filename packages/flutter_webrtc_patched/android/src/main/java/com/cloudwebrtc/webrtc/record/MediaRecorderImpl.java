@@ -53,6 +53,11 @@ public class MediaRecorderImpl {
     }
 
     public File getRecordFile() { return recordFile; }
+    public void setPaused(boolean paused) {
+        if (!isRunning || videoFileRenderer == null)
+            throw new IllegalStateException("Recorder not running");
+        videoFileRenderer.setPaused(paused);
+    }
 
     public void stopRecording() throws IOException {
         isRunning = false;

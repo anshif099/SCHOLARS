@@ -1012,6 +1012,12 @@ public class GetUserMediaImpl {
         }
     }
 
+    void setRecordingPaused(Integer id, boolean paused) {
+        MediaRecorderImpl recorder = mediaRecorders.get(id);
+        if (recorder == null) throw new IllegalStateException("Recorder not found");
+        recorder.setPaused(paused);
+    }
+
     void stopRecording(Integer id, String albumName) throws Exception {
         try {
             FallbackAudioRecorder fallback = fallbackAudioRecorders.remove(id);

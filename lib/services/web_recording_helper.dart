@@ -17,4 +17,5 @@ abstract class WebRecordingHelper {
   void addRemoteStream(dynamic stream);
 
   Future<dynamic> stop();
+  Future<void> setPaused(bool paused);
 }

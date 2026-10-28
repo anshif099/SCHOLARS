@@ -81,6 +81,8 @@ void main() {
       task.completed.complete(TestSnapshot());
       await finished;
       expect(RecordingUpload.jobs, isEmpty);
+      expect(job.completed, isTrue);
+      expect(job.progress, 100);
       expect(foreground, [true, false]);
       await task.events.close();
       await network.close();
@@ -134,6 +136,7 @@ void main() {
       RecordingUpload.jobs[job.id] = job;
       await job.start();
       expect(job.failed, isTrue);
+      expect(job.completed, isFalse);
       expect(RecordingUpload.jobs[job.id], same(job));
       final retry = job.start();
       await job.start();
