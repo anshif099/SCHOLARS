@@ -5359,6 +5359,38 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     );
   }
 
+  // Match the call-control Wrap, including its extra rows on narrow screens.
+  double _documentToolbarBottom() {
+    final width = MediaQuery.sizeOf(context).width;
+    final sizes = <double>[
+      if (widget.isTeacher) 56,
+      if (widget.isTeacher &&
+          _isRecording &&
+          (kIsWeb || defaultTargetPlatform == TargetPlatform.android))
+        56,
+      56, // Speaker
+      56, // Microphone
+      64, // End call
+      56, // Camera
+      if (widget.isTeacher && _sharedDocUrl == null) ...[56, 56],
+    ];
+    double rowWidth = 0;
+    double rowHeight = 0;
+    double height = 0;
+    for (final size in sizes) {
+      final spacing = rowWidth == 0 ? 0.0 : 14.0;
+      if (rowWidth > 0 && rowWidth + spacing + size > width) {
+        height += rowHeight + 12;
+        rowWidth = size;
+        rowHeight = size;
+      } else {
+        rowWidth += spacing + size;
+        if (size > rowHeight) rowHeight = size;
+      }
+    }
+    return 30 + height + rowHeight + 16;
+  }
+
   Widget _buildWhiteboardToolbar() {
     if (_isStudentDocumentFullScreen) {
       return const SizedBox.shrink();
@@ -5366,7 +5398,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
 
     if (!_showWhiteboardToolbar) {
       return Positioned(
-        bottom: 120,
+        bottom: _documentToolbarBottom(),
         right: 20,
         child: Tooltip(
           message: 'Show tools',
@@ -5396,7 +5428,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     }
 
     return Positioned(
-      bottom: 120,
+      bottom: _documentToolbarBottom(),
       left: 20,
       right: 20,
       child: Column(
@@ -5469,11 +5501,15 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
                 BoxShadow(color: Colors.black26, blurRadius: 10),
               ],
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            child: Wrap(
+              alignment: WrapAlignment.spaceAround,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 12,
+              runSpacing: 8,
               children: [
                 if (widget.isTeacher)
                   Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
                       IconButton(
                         icon: Icon(
@@ -5513,6 +5549,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
                   )
                 else
                   Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
                         _isDrawingMode
@@ -5546,6 +5583,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
                   ),
                 if (_sharedDocType == 'pdf')
                   Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
                       if (widget.isTeacher)
                         IconButton(
