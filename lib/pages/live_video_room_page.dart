@@ -3606,9 +3606,6 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   @override
   Widget build(BuildContext context) {
     final hideLiveChrome = _isStudentDocumentFullScreen;
-    final controlSurfaceColor = _sharedDocUrl != null
-        ? Colors.black.withValues(alpha: 0.78)
-        : Colors.white.withValues(alpha: 0.2);
     return PopScope<void>(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
@@ -3619,6 +3616,16 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       },
       child: Scaffold(
         backgroundColor: Colors.black,
+        // Reserve the actual wrapped control height on web and mobile.
+        bottomNavigationBar: _sharedDocUrl != null && !hideLiveChrome
+            ? SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                  child: _buildCallControls(),
+                ),
+              )
+            : null,
         body: SafeArea(
           child: Stack(
             children: [
@@ -3873,124 +3880,12 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
                     ),
                   ),
                 ),
-              if (!hideLiveChrome)
+              if (!hideLiveChrome && _sharedDocUrl == null)
                 Positioned(
                   bottom: 30,
                   left: 0,
                   right: 0,
-                  child: Wrap(
-                    alignment: WrapAlignment.center,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    spacing: 14,
-                    runSpacing: 12,
-                    children: [
-                      if (widget.isTeacher)
-                        _buildControlButton(
-                          tooltip: _isRecording
-                              ? 'Recording in progress'
-                              : 'Start recording',
-                          icon: Icons.fiber_manual_record_rounded,
-                          color: _isRecording
-                              ? Colors.redAccent
-                              : controlSurfaceColor,
-                          iconColor: _isRecording
-                              ? Colors.white
-                              : Colors.redAccent,
-                          enabled: _canStartRecording,
-                          dimWhenDisabled: !_isRecording,
-                          onTap: _startRecording,
-                        ),
-                      if (widget.isTeacher &&
-                          _isRecording &&
-                          (kIsWeb ||
-                              defaultTargetPlatform == TargetPlatform.android))
-                        _buildControlButton(
-                          tooltip: _isRecordingPaused
-                              ? 'Resume recording'
-                              : 'Pause recording',
-                          icon: _isRecordingPaused
-                              ? Icons.play_arrow_rounded
-                              : Icons.pause_rounded,
-                          color: _isRecordingPaused
-                              ? Colors.orange
-                              : controlSurfaceColor,
-                          iconColor: Colors.white,
-                          enabled: !_changingRecordingPause && !_hasEndedCall,
-                          onTap: _toggleRecordingPause,
-                        ),
-                      _buildControlButton(
-                        tooltip: kIsWeb
-                            ? (_isSpeakerOn
-                                  ? 'Mute class sound'
-                                  : 'Enable class sound')
-                            : (_isSpeakerOn
-                                  ? 'Switch to earpiece'
-                                  : 'Switch to speaker'),
-                        icon: _isSpeakerOn
-                            ? Icons.volume_up_rounded
-                            : Icons.volume_down_rounded,
-                        color: _isSpeakerOn
-                            ? controlSurfaceColor
-                            : Colors.redAccent,
-                        iconColor: Colors.white,
-                        onTap: _toggleSpeaker,
-                      ),
-                      _buildControlButton(
-                        tooltip: _isMicMuted ? 'Unmute mic' : 'Mute mic',
-                        icon: _isMicMuted
-                            ? Icons.mic_off_rounded
-                            : Icons.mic_rounded,
-                        color: _isMicMuted
-                            ? Colors.redAccent
-                            : controlSurfaceColor,
-                        iconColor: Colors.white,
-                        onTap: _toggleMic,
-                      ),
-                      _buildControlButton(
-                        tooltip: 'End call',
-                        icon: Icons.call_end_rounded,
-                        color: Colors.redAccent,
-                        iconColor: Colors.white,
-                        size: 64,
-                        onTap: _requestCallExit,
-                      ),
-                      _buildControlButton(
-                        tooltip: _isVideoOff
-                            ? 'Turn camera on'
-                            : 'Turn camera off',
-                        icon: _isVideoOff
-                            ? Icons.videocam_off_rounded
-                            : Icons.videocam_rounded,
-                        color: _isVideoOff
-                            ? Colors.redAccent
-                            : controlSurfaceColor,
-                        iconColor: Colors.white,
-                        onTap: _toggleVideo,
-                      ),
-                      if (widget.isTeacher && _sharedDocUrl == null)
-                        _buildControlButton(
-                          tooltip: _isSavingRecording
-                              ? 'Saving recording'
-                              : 'Save & end class',
-                          icon: Icons.save_rounded,
-                          color: const Color(0xFF1F7A4D),
-                          iconColor: Colors.white,
-                          enabled: _canSaveRecording,
-                          onTap: _saveRecordingNow,
-                        ),
-                      if (widget.isTeacher && _sharedDocUrl == null)
-                        _buildControlButton(
-                          tooltip: 'Share Document',
-                          icon: Icons.present_to_all_rounded,
-                          color: controlSurfaceColor,
-                          iconColor: Colors.white,
-                          enabled: !_isProcessing,
-                          onTap: () async {
-                            await _shareDocumentPicker();
-                          },
-                        ),
-                    ],
-                  ),
+                  child: _buildCallControls(),
                 ),
               if (_isProcessing)
                 Positioned.fill(
@@ -4034,6 +3929,102 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildCallControls() {
+    final controlSurfaceColor = _sharedDocUrl != null
+        ? Colors.black.withValues(alpha: 0.78)
+        : Colors.white.withValues(alpha: 0.2);
+    return Wrap(
+      alignment: WrapAlignment.center,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: 14,
+      runSpacing: 12,
+      children: [
+        if (widget.isTeacher)
+          _buildControlButton(
+            tooltip: _isRecording ? 'Recording in progress' : 'Start recording',
+            icon: Icons.fiber_manual_record_rounded,
+            color: _isRecording ? Colors.redAccent : controlSurfaceColor,
+            iconColor: _isRecording ? Colors.white : Colors.redAccent,
+            enabled: _canStartRecording,
+            dimWhenDisabled: !_isRecording,
+            onTap: _startRecording,
+          ),
+        if (widget.isTeacher &&
+            _isRecording &&
+            (kIsWeb || defaultTargetPlatform == TargetPlatform.android))
+          _buildControlButton(
+            tooltip: _isRecordingPaused
+                ? 'Resume recording'
+                : 'Pause recording',
+            icon: _isRecordingPaused
+                ? Icons.play_arrow_rounded
+                : Icons.pause_rounded,
+            color: _isRecordingPaused ? Colors.orange : controlSurfaceColor,
+            iconColor: Colors.white,
+            enabled: !_changingRecordingPause && !_hasEndedCall,
+            onTap: _toggleRecordingPause,
+          ),
+        _buildControlButton(
+          tooltip: kIsWeb
+              ? (_isSpeakerOn ? 'Mute class sound' : 'Enable class sound')
+              : (_isSpeakerOn ? 'Switch to earpiece' : 'Switch to speaker'),
+          icon: _isSpeakerOn
+              ? Icons.volume_up_rounded
+              : Icons.volume_down_rounded,
+          color: _isSpeakerOn ? controlSurfaceColor : Colors.redAccent,
+          iconColor: Colors.white,
+          onTap: _toggleSpeaker,
+        ),
+        _buildControlButton(
+          tooltip: _isMicMuted ? 'Unmute mic' : 'Mute mic',
+          icon: _isMicMuted ? Icons.mic_off_rounded : Icons.mic_rounded,
+          color: _isMicMuted ? Colors.redAccent : controlSurfaceColor,
+          iconColor: Colors.white,
+          onTap: _toggleMic,
+        ),
+        _buildControlButton(
+          tooltip: 'End call',
+          icon: Icons.call_end_rounded,
+          color: Colors.redAccent,
+          iconColor: Colors.white,
+          size: 64,
+          onTap: _requestCallExit,
+        ),
+        _buildControlButton(
+          tooltip: _isVideoOff ? 'Turn camera on' : 'Turn camera off',
+          icon: _isVideoOff
+              ? Icons.videocam_off_rounded
+              : Icons.videocam_rounded,
+          color: _isVideoOff ? Colors.redAccent : controlSurfaceColor,
+          iconColor: Colors.white,
+          onTap: _toggleVideo,
+        ),
+        if (widget.isTeacher && _sharedDocUrl == null)
+          _buildControlButton(
+            tooltip: _isSavingRecording
+                ? 'Saving recording'
+                : 'Save & end class',
+            icon: Icons.save_rounded,
+            color: const Color(0xFF1F7A4D),
+            iconColor: Colors.white,
+            enabled: _canSaveRecording,
+            onTap: _saveRecordingNow,
+          ),
+        if (widget.isTeacher && _sharedDocUrl == null)
+          _buildControlButton(
+            tooltip: 'Share Document',
+            icon: Icons.present_to_all_rounded,
+            color: controlSurfaceColor,
+            iconColor: Colors.white,
+            enabled: !_isProcessing,
+            onTap: () async {
+              await _shareDocumentPicker();
+            },
+          ),
+      ],
     );
   }
 
@@ -4936,6 +4927,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     return Column(
       children: [
         if (!_isStudentDocumentFullScreen) _buildParticipantVideoStrip(),
+        _buildDocumentViewControls(),
         Expanded(
           child: Stack(
             children: [
@@ -5014,11 +5006,10 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
                   ),
                 ),
               ),
-              _buildDocumentViewControls(),
-              _buildWhiteboardToolbar(),
             ],
           ),
         ),
+        _buildWhiteboardToolbar(),
       ],
     );
   }
@@ -5242,11 +5233,11 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   }
 
   Widget _buildDocumentViewControls() {
-    return Positioned(
-      top: 12,
-      left: 12,
-      right: 12,
+    return Padding(
+      padding: const EdgeInsets.all(8),
       child: SafeArea(
+        top: false,
+        bottom: false,
         child: Align(
           alignment: Alignment.topRight,
           child: Container(
@@ -5359,67 +5350,37 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
     );
   }
 
-  // Match the call-control Wrap, including its extra rows on narrow screens.
-  double _documentToolbarBottom() {
-    final width = MediaQuery.sizeOf(context).width;
-    final sizes = <double>[
-      if (widget.isTeacher) 56,
-      if (widget.isTeacher &&
-          _isRecording &&
-          (kIsWeb || defaultTargetPlatform == TargetPlatform.android))
-        56,
-      56, // Speaker
-      56, // Microphone
-      64, // End call
-      56, // Camera
-      if (widget.isTeacher && _sharedDocUrl == null) ...[56, 56],
-    ];
-    double rowWidth = 0;
-    double rowHeight = 0;
-    double height = 0;
-    for (final size in sizes) {
-      final spacing = rowWidth == 0 ? 0.0 : 14.0;
-      if (rowWidth > 0 && rowWidth + spacing + size > width) {
-        height += rowHeight + 12;
-        rowWidth = size;
-        rowHeight = size;
-      } else {
-        rowWidth += spacing + size;
-        if (size > rowHeight) rowHeight = size;
-      }
-    }
-    return 30 + height + rowHeight + 16;
-  }
-
   Widget _buildWhiteboardToolbar() {
     if (_isStudentDocumentFullScreen) {
       return const SizedBox.shrink();
     }
 
     if (!_showWhiteboardToolbar) {
-      return Positioned(
-        bottom: _documentToolbarBottom(),
-        right: 20,
-        child: Tooltip(
-          message: 'Show tools',
-          child: GestureDetector(
-            onTap: () => setState(() => _showWhiteboardToolbar = true),
-            child: Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.85),
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white24),
-                boxShadow: const [
-                  BoxShadow(color: Colors.black38, blurRadius: 8),
-                ],
-              ),
-              child: Icon(
-                widget.isTeacher
-                    ? Icons.palette_rounded
-                    : Icons.visibility_rounded,
-                color: Colors.white,
-                size: 24,
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: Tooltip(
+            message: 'Show tools',
+            child: GestureDetector(
+              onTap: () => setState(() => _showWhiteboardToolbar = true),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.85),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white24),
+                  boxShadow: const [
+                    BoxShadow(color: Colors.black38, blurRadius: 8),
+                  ],
+                ),
+                child: Icon(
+                  widget.isTeacher
+                      ? Icons.palette_rounded
+                      : Icons.visibility_rounded,
+                  color: Colors.white,
+                  size: 24,
+                ),
               ),
             ),
           ),
@@ -5427,10 +5388,8 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
       );
     }
 
-    return Positioned(
-      bottom: _documentToolbarBottom(),
-      left: 20,
-      right: 20,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
