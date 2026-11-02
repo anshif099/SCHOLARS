@@ -45,7 +45,7 @@ void main() {
   tearDown(() => RecordingUpload.jobs.clear());
 
   test(
-    'connection loss pauses the same upload and reconnect resumes it',
+    'database disconnect does not pause or restart the storage upload',
     () async {
       final network = StreamController<bool>.broadcast();
       final task = TestUploadTask();
@@ -72,8 +72,8 @@ void main() {
       expect(job.progress, 47);
       network.add(false);
       await flush();
-      expect(task.isPaused, isTrue);
-      expect(job.label, contains('Offline'));
+      expect(task.isPaused, isFalse);
+      expect(job.label, 'Uploading 47%');
       network.add(true);
       await flush();
       expect(task.isPaused, isFalse);

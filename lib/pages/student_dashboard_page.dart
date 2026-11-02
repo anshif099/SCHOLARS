@@ -1351,7 +1351,7 @@ class _StudentDashboardPageState extends State<StudentDashboardPage> {
       return 'Preparing for iPhone';
     }
     if (_hasPlayableRecording(recording)) return null;
-    return 'Upload failed';
+    return recordingUnavailableStatus(recording);
   }
 
   IconData _recordingIcon(Map<String, dynamic> recording) {
@@ -1723,7 +1723,7 @@ class _SubjectRecordingsPageState extends State<SubjectRecordingsPage> {
       return 'Preparing for iPhone';
     }
     if (_hasPlayableRecording(recording)) return null;
-    return 'Upload failed';
+    return recordingUnavailableStatus(recording);
   }
 
   IconData _recordingIcon(Map<dynamic, dynamic> recording) {

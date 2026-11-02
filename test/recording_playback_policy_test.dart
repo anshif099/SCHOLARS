@@ -3,6 +3,34 @@ import 'package:scholars/services/recording_playback_policy.dart';
 
 void main() {
   group('recording playback policy', () {
+    test('distinguishes empty recordings from failed transfers', () {
+      expect(
+        recordingUnavailableStatus({'upload_status': 'empty_file'}),
+        'Recording file was empty',
+      );
+      expect(
+        recordingUnavailableStatus({'upload_status': 'upload_failed'}),
+        'Upload failed',
+      );
+    });
+
+    test('does not call an old unfinished upload a failed transfer', () {
+      expect(
+        recordingUnavailableStatus({'upload_status': 'uploading'}),
+        'Upload interrupted — not completed',
+      );
+    });
+
+    test('missing playback metadata is not proof of an upload failure', () {
+      expect(
+        recordingUnavailableStatus({
+          'upload_status': 'ready',
+          'storage_path': 'recorded_classes/class/video.mp4',
+        }),
+        'Video unavailable',
+      );
+      expect(recordingUnavailableStatus({}), 'Video unavailable');
+    });
     test('keeps an uploaded MP4 playable while normalization runs', () {
       final recording = <String, dynamic>{
         'compatibility_status': 'converting',

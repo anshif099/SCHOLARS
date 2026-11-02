@@ -4,6 +4,7 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 /// App-scoped ownership: navigating away from the call never cancels an upload.
 class RecordingUpload extends ChangeNotifier {
@@ -46,9 +47,7 @@ class RecordingUpload extends ChangeNotifier {
   bool failed = false;
   int progress = 0;
 
-  String get label => !online
-      ? 'Offline — upload paused ($progress%)'
-      : paused
+  String get label => paused
       ? 'Upload paused ($progress%)'
       : failed
       ? 'Upload failed — retry'
@@ -76,6 +75,16 @@ class RecordingUpload extends ChangeNotifier {
   }
 
   static Future<void> _foreground(bool start) async {
+    // Keep the display awake while a web upload is active. This reduces
+    // accidental suspension; browsers can still freeze a minimized PWA.
+    if (kIsWeb) {
+      try {
+        await WakelockPlus.toggle(enable: start);
+      } catch (error) {
+        debugPrint('Upload screen wake lock: $error');
+      }
+      return;
+    }
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
     try {
       await _channel.invokeMethod<void>(start ? 'start' : 'stop');
@@ -90,10 +99,17 @@ class RecordingUpload extends ChangeNotifier {
     failed = false;
     completed = false;
     notifyListeners();
-    await _keepAlive(true);
+    try {
+      await _keepAlive(true);
+    } catch (error) {
+      debugPrint('Upload keep alive: $error');
+    }
     final connection = _connections().listen((connected) {
       online = connected;
-      unawaited(_syncTask());
+      // RTDB connectivity is not Storage connectivity. In particular, mobile
+      // browsers may disconnect the database socket in the background while
+      // an HTTP upload is still healthy. Let Storage retry its own requests;
+      // pausing here prevents those retries and can stall a healthy upload.
       notifyListeners();
     });
     try {
@@ -128,7 +144,7 @@ class RecordingUpload extends ChangeNotifier {
       final task = _task;
       if (task == null) return;
       try {
-        if (paused || !online) {
+        if (paused) {
           await task.pause();
         } else {
           await task.resume();

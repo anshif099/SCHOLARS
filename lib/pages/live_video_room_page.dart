@@ -78,7 +78,7 @@ class _LiveVideoRoomPageState extends State<LiveVideoRoomPage>
   // comfortably above the native worst case, especially for long classes.
   static const Duration _recorderStopTimeout = Duration(seconds: 30);
   static const Duration _roomCleanupTimeout = Duration(seconds: 6);
-  static const Duration _uploadRetryLimit = Duration(minutes: 30);
+  static const Duration _uploadRetryLimit = Duration(hours: 24);
   static const Duration _studentReconnectDelay = Duration(seconds: 2);
   static const Duration _studentConnectTimeout = Duration(seconds: 12);
   static const Duration _remoteVideoFirstFrameTimeout = Duration(seconds: 10);
